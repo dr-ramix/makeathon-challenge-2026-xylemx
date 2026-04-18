@@ -17,6 +17,7 @@ class ExperimentConfig:
     output_root: str = "output/training_runs"
     preprocessing_dir: str = ""
     reuse_preprocessing: bool = True
+    preprocessing_num_workers: int = 4
     run_name: str = ""
     short_tag: str = ""
     seed: int = 42

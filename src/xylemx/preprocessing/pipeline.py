@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,31 @@ LOGGER = logging.getLogger(__name__)
 def _save_array(path: Path, array: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, array)
+
+
+def _cache_feature_pack(tile_id: str, split: str, preprocessing_dir: Path, feature_pack: Any) -> None:
+    _save_array(get_feature_path(preprocessing_dir, split, tile_id), feature_pack.features.astype(np.float16))
+    _save_array(get_valid_mask_path(preprocessing_dir, split, tile_id), feature_pack.valid_mask.astype(np.bool_))
+    if feature_pack.preview is not None:
+        _save_array(get_preview_path(preprocessing_dir, split, tile_id), feature_pack.preview.astype(np.uint8))
+
+
+def _build_and_cache_tile_features(
+    record: TileRecord,
+    split: str,
+    preprocessing_dir: Path,
+    config: ExperimentConfig,
+    aef_pca: AefPcaModel,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    feature_pack = build_multimodal_feature_pack(record, config, aef_pca)
+    _cache_feature_pack(record.tile_id, split, preprocessing_dir, feature_pack)
+    return {
+        "tile_id": record.tile_id,
+        "feature_names": feature_pack.feature_names,
+        "metadata": feature_pack.metadata,
+        "elapsed_seconds": time.perf_counter() - start,
+    }
 
 
 def _load_single_band(path: Path, dst_profile: dict, *, resampling: Resampling) -> tuple[np.ndarray, np.ndarray]:
@@ -158,6 +185,70 @@ def _compute_normalization_stats(
     return payload
 
 
+def _run_feature_stage(
+    records: dict[str, TileRecord],
+    *,
+    split: str,
+    preprocessing_dir: Path,
+    config: ExperimentConfig,
+    aef_pca: AefPcaModel,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    tile_ids = sorted(records.keys())
+    metadata_by_tile: dict[str, dict[str, Any]] = {}
+    feature_names: list[str] | None = None
+    stage_start = time.perf_counter()
+
+    def _log_progress(tile_id: str, completed: int, total: int, tile_seconds: float) -> None:
+        elapsed = time.perf_counter() - stage_start
+        avg_per_tile = elapsed / max(completed, 1)
+        remaining = max(total - completed, 0)
+        eta_seconds = avg_per_tile * remaining
+        LOGGER.info(
+            "Finished %s features for %s (%d/%d) in %.1fs | elapsed=%.1fs avg=%.1fs/tile eta=%.1fs",
+            split,
+            tile_id,
+            completed,
+            total,
+            tile_seconds,
+            elapsed,
+            avg_per_tile,
+            eta_seconds,
+        )
+
+    if config.preprocessing_num_workers <= 1:
+        for index, tile_id in enumerate(tile_ids, start=1):
+            result = _build_and_cache_tile_features(records[tile_id], split, preprocessing_dir, config, aef_pca)
+            feature_names = result["feature_names"]
+            metadata_by_tile[tile_id] = result["metadata"]
+            _log_progress(tile_id, index, len(tile_ids), result["elapsed_seconds"])
+    else:
+        LOGGER.info("Using %d preprocessing workers for %s tiles", config.preprocessing_num_workers, split)
+        with ProcessPoolExecutor(max_workers=config.preprocessing_num_workers) as executor:
+            futures = {
+                executor.submit(
+                    _build_and_cache_tile_features,
+                    records[tile_id],
+                    split,
+                    preprocessing_dir,
+                    config,
+                    aef_pca,
+                ): tile_id
+                for tile_id in tile_ids
+            }
+            completed = 0
+            for future in as_completed(futures):
+                tile_id = futures[future]
+                result = future.result()
+                feature_names = result["feature_names"]
+                metadata_by_tile[tile_id] = result["metadata"]
+                completed += 1
+                _log_progress(tile_id, completed, len(tile_ids), result["elapsed_seconds"])
+
+    if feature_names is None:
+        raise RuntimeError(f"No {split} features were generated during preprocessing")
+    return metadata_by_tile, feature_names
+
+
 def run_preprocessing(config: ExperimentConfig, preprocessing_dir: str | Path) -> dict[str, Any]:
     """Build reusable preprocessing artifacts under the run directory."""
 
@@ -193,39 +284,35 @@ def run_preprocessing(config: ExperimentConfig, preprocessing_dir: str | Path) -
     save_json(preprocessing_dir / "aef_pca.json", aef_pca.to_payload())
 
     tile_metadata: dict[str, dict[str, Any]] = {"train": {}, "test": {}}
-    feature_names: list[str] | None = None
 
     LOGGER.info("Building train feature caches")
+    train_feature_metadata, feature_names = _run_feature_stage(
+        train_records,
+        split="train",
+        preprocessing_dir=preprocessing_dir,
+        config=config,
+        aef_pca=aef_pca,
+    )
     for tile_id, record in train_records.items():
-        LOGGER.info("Building train features for %s", tile_id)
-        feature_pack = build_multimodal_feature_pack(record, config, aef_pca)
-        feature_names = feature_pack.feature_names
-        _save_array(get_feature_path(preprocessing_dir, "train", tile_id), feature_pack.features.astype(np.float16))
-        _save_array(get_valid_mask_path(preprocessing_dir, "train", tile_id), feature_pack.valid_mask.astype(np.bool_))
-        if feature_pack.preview is not None:
-            _save_array(get_preview_path(preprocessing_dir, "train", tile_id), feature_pack.preview.astype(np.uint8))
         tile_metadata["train"][tile_id] = {
             **record.to_dict(),
-            **feature_pack.metadata,
+            **train_feature_metadata[tile_id],
             **label_summaries[tile_id],
         }
 
     LOGGER.info("Building test feature caches")
+    test_feature_metadata, _ = _run_feature_stage(
+        test_records,
+        split="test",
+        preprocessing_dir=preprocessing_dir,
+        config=config,
+        aef_pca=aef_pca,
+    )
     for tile_id, record in test_records.items():
-        LOGGER.info("Building test features for %s", tile_id)
-        feature_pack = build_multimodal_feature_pack(record, config, aef_pca)
-        feature_names = feature_pack.feature_names
-        _save_array(get_feature_path(preprocessing_dir, "test", tile_id), feature_pack.features.astype(np.float16))
-        _save_array(get_valid_mask_path(preprocessing_dir, "test", tile_id), feature_pack.valid_mask.astype(np.bool_))
-        if feature_pack.preview is not None:
-            _save_array(get_preview_path(preprocessing_dir, "test", tile_id), feature_pack.preview.astype(np.uint8))
         tile_metadata["test"][tile_id] = {
             **record.to_dict(),
-            **feature_pack.metadata,
+            **test_feature_metadata[tile_id],
         }
-
-    if feature_names is None:
-        raise RuntimeError("No features were generated during preprocessing")
 
     normalization_stats = _compute_normalization_stats(
         train_tile_ids,

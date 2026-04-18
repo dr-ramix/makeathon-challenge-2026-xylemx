@@ -36,3 +36,4 @@ mixup: false
 seed: 42
 data_root: data/makeathon-challenge
 output_root: output/training_runs
+preprocessing_num_workers: 4
