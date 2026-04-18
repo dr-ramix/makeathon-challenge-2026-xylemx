@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
-from xylemx.config import ExperimentConfig
+from xylemx.config import ExperimentConfig, parse_cli_overrides
 from xylemx.preprocessing.pipeline import run_preprocessing
 
 
@@ -18,9 +18,11 @@ def main() -> None:
     parser.add_argument("--data-root", type=str, default="data/makeathon-challenge")
     parser.add_argument("--output-dir", type=Path, default=Path("output/preprocessing"))
     parser.add_argument("--preprocessing-num-workers", type=int, default=4)
-    args = parser.parse_args()
+    args, overrides = parser.parse_known_args()
 
-    config = ExperimentConfig(
+    config = parse_cli_overrides(overrides) if overrides else ExperimentConfig()
+    config = replace(
+        config,
         data_root=args.data_root,
         preprocessing_num_workers=args.preprocessing_num_workers,
     )

@@ -59,8 +59,35 @@ class ExperimentConfig:
     hard_negative_ratio: float = 3.0
 
     min_valid_pixels_fraction_per_month: float = 0.20
+    min_valid_pixels_fraction_per_snapshot: float = 0.20
     min_observations_per_pixel: int = 1
     min_valid_patch_fraction: float = 0.05
+    temporal_feature_mode: str = "snapshot_pair"
+    snapshot_mode: bool = True
+    early_window_start_year: int = 2020
+    early_window_end_year: int = 2021
+    late_window_start_year: int = 2024
+    late_window_end_year: int = 2025
+    selection_method: str = "best_valid"
+    fallback_to_nearest_valid_year: bool = True
+    skip_bad_snapshots: bool = True
+    require_s2: bool = True
+    require_s1: bool = False
+    require_aef: bool = False
+    skip_tile_if_required_modality_missing: bool = True
+    cache_preprocessed: bool = True
+    rebuild_cache: bool = False
+    s2_month_stride: int = 1
+    s1_month_stride: int = 1
+    aef_year_stride: int = 1
+    s2_use_mean: bool = True
+    s2_use_std: bool = True
+    s2_use_delta: bool = True
+    use_s1_features: bool = True
+    s1_use_mean: bool = True
+    s1_use_std: bool = True
+    s1_use_delta: bool = True
+    use_aef_features: bool = True
     aef_pca_dim: int = 8
     pca_num_samples_per_raster: int = 2000
     clip_features: bool = True
@@ -126,6 +153,7 @@ class ExperimentConfig:
     visualization_include_input_preview: bool = True
     visualization_use_best_checkpoint: bool = False
     save_probability_rasters: bool = False
+    save_input_previews: bool = True
 
     def year_weights(self) -> dict[int, float]:
         """Return configured year weights as a dictionary."""

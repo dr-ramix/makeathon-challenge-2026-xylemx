@@ -315,6 +315,10 @@ def get_feature_path(preprocessing_dir: str | Path, split: str, tile_id: str) ->
     return Path(preprocessing_dir) / "features" / split / f"{tile_id}.npy"
 
 
+def get_feature_metadata_path(preprocessing_dir: str | Path, split: str, tile_id: str) -> Path:
+    return Path(preprocessing_dir) / "features" / split / f"{tile_id}.json"
+
+
 def get_valid_mask_path(preprocessing_dir: str | Path, split: str, tile_id: str) -> Path:
     return Path(preprocessing_dir) / "valid_masks" / split / f"{tile_id}.npy"
 

@@ -71,6 +71,7 @@ data/makeathon-challenge/
 ## Docs
 
 - [Baseline Pipeline](./docs/baseline-pipeline.md)
+- [Weak Label Fusion](./docs/weak-label-fusion.md)
 - [SLURM Jobs](./jobs/README.md)
 
 ## Baseline Pipeline
@@ -110,5 +111,6 @@ Typical workflow:
 
 - The first baseline uses Sentinel-2 only and builds one early-year composite and one late-year composite per tile. It prefers `2020` and `2025`, and falls back to the earliest/latest available Sentinel-2 year when a tile is missing one of those endpoints.
 - Weak labels are decoded and reprojected onto the Sentinel-2 grid before consensus targets are built.
+- The current multimodal preprocessing default uses a `snapshot_pair` feature mode: one early snapshot, one late snapshot, and one `late - early` delta for Sentinel-2, Sentinel-1, and AEF PCA features.
 - One training tile in the provided data (`18NWM_9_4`) is only 2 pixels wide in Sentinel-2. The dataset loader skips tiles smaller than the requested patch size instead of forcing invalid patches into training.
 - In this offline sandbox, editable install needed `--no-build-isolation` because `pip install -e .` attempted to resolve build dependencies from the network.

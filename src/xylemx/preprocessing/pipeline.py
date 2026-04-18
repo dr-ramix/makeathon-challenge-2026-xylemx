@@ -16,6 +16,7 @@ from xylemx.config import ExperimentConfig
 from xylemx.data.io import (
     TileRecord,
     get_feature_path,
+    get_feature_metadata_path,
     get_ignore_mask_path,
     get_preview_path,
     get_raster_profile,
@@ -23,6 +24,7 @@ from xylemx.data.io import (
     get_valid_mask_path,
     get_vote_count_path,
     get_weight_map_path,
+    load_json,
     read_reprojected_raster,
     save_json,
     scan_tiles,
@@ -35,7 +37,12 @@ from xylemx.labels.consensus import (
     glads2_positive_mask,
     radd_positive_mask,
 )
-from xylemx.preprocessing.features import AefPcaModel, build_multimodal_feature_pack, fit_aef_pca_model
+from xylemx.preprocessing.features import (
+    AefPcaModel,
+    TilePreprocessingError,
+    build_multimodal_feature_pack,
+    fit_aef_pca_model,
+)
 from xylemx.preprocessing.normalize import ReservoirPercentileEstimator, RunningChannelStats, clip_array
 
 LOGGER = logging.getLogger(__name__)
@@ -48,6 +55,7 @@ def _save_array(path: Path, array: np.ndarray) -> None:
 
 def _cache_feature_pack(tile_id: str, split: str, preprocessing_dir: Path, feature_pack: Any) -> None:
     _save_array(get_feature_path(preprocessing_dir, split, tile_id), feature_pack.features.astype(np.float16))
+    save_json(get_feature_metadata_path(preprocessing_dir, split, tile_id), feature_pack.metadata)
     _save_array(get_valid_mask_path(preprocessing_dir, split, tile_id), feature_pack.valid_mask.astype(np.bool_))
     if feature_pack.preview is not None:
         _save_array(get_preview_path(preprocessing_dir, split, tile_id), feature_pack.preview.astype(np.uint8))
@@ -58,7 +66,7 @@ def _build_and_cache_tile_features(
     split: str,
     preprocessing_dir: Path,
     config: ExperimentConfig,
-    aef_pca: AefPcaModel,
+    aef_pca: AefPcaModel | None,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     feature_pack = build_multimodal_feature_pack(record, config, aef_pca)
@@ -191,11 +199,12 @@ def _run_feature_stage(
     split: str,
     preprocessing_dir: Path,
     config: ExperimentConfig,
-    aef_pca: AefPcaModel,
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    aef_pca: AefPcaModel | None,
+) -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
     tile_ids = sorted(records.keys())
     metadata_by_tile: dict[str, dict[str, Any]] = {}
     feature_names: list[str] | None = None
+    skipped_tile_ids: list[str] = []
     stage_start = time.perf_counter()
 
     def _log_progress(tile_id: str, completed: int, total: int, tile_seconds: float) -> None:
@@ -217,10 +226,15 @@ def _run_feature_stage(
 
     if config.preprocessing_num_workers <= 1:
         for index, tile_id in enumerate(tile_ids, start=1):
-            result = _build_and_cache_tile_features(records[tile_id], split, preprocessing_dir, config, aef_pca)
+            try:
+                result = _build_and_cache_tile_features(records[tile_id], split, preprocessing_dir, config, aef_pca)
+            except TilePreprocessingError as exc:
+                skipped_tile_ids.append(tile_id)
+                LOGGER.warning("Skipping %s tile %s during preprocessing: %s", split, tile_id, exc)
+                continue
             feature_names = result["feature_names"]
             metadata_by_tile[tile_id] = result["metadata"]
-            _log_progress(tile_id, index, len(tile_ids), result["elapsed_seconds"])
+            _log_progress(tile_id, len(metadata_by_tile), len(tile_ids), result["elapsed_seconds"])
     else:
         LOGGER.info("Using %d preprocessing workers for %s tiles", config.preprocessing_num_workers, split)
         with ProcessPoolExecutor(max_workers=config.preprocessing_num_workers) as executor:
@@ -238,7 +252,12 @@ def _run_feature_stage(
             completed = 0
             for future in as_completed(futures):
                 tile_id = futures[future]
-                result = future.result()
+                try:
+                    result = future.result()
+                except TilePreprocessingError as exc:
+                    skipped_tile_ids.append(tile_id)
+                    LOGGER.warning("Skipping %s tile %s during preprocessing: %s", split, tile_id, exc)
+                    continue
                 feature_names = result["feature_names"]
                 metadata_by_tile[tile_id] = result["metadata"]
                 completed += 1
@@ -246,7 +265,7 @@ def _run_feature_stage(
 
     if feature_names is None:
         raise RuntimeError(f"No {split} features were generated during preprocessing")
-    return metadata_by_tile, feature_names
+    return metadata_by_tile, feature_names, skipped_tile_ids
 
 
 def run_preprocessing(config: ExperimentConfig, preprocessing_dir: str | Path) -> dict[str, Any]:
@@ -254,6 +273,31 @@ def run_preprocessing(config: ExperimentConfig, preprocessing_dir: str | Path) -
 
     preprocessing_dir = Path(preprocessing_dir)
     preprocessing_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = preprocessing_dir / "summary.json"
+    if config.cache_preprocessed and not config.rebuild_cache and summary_path.exists():
+        LOGGER.info("Reusing cached preprocessing artifacts from %s", preprocessing_dir)
+        return load_json(summary_path)
+    LOGGER.info(
+        (
+            "Preprocessing mode=%s snapshot_mode=%s windows early=%d-%d late=%d-%d"
+        ),
+        config.temporal_feature_mode,
+        config.snapshot_mode,
+        config.early_window_start_year,
+        config.early_window_end_year,
+        config.late_window_start_year,
+        config.late_window_end_year,
+    )
+    LOGGER.info(
+        (
+            "Selection method=%s fallback_to_nearest_valid_year=%s "
+            "min_valid_pixels_fraction_per_snapshot=%.2f skip_bad_snapshots=%s"
+        ),
+        config.selection_method,
+        config.fallback_to_nearest_valid_year,
+        config.min_valid_pixels_fraction_per_snapshot,
+        config.skip_bad_snapshots,
+    )
 
     train_records = scan_tiles(config.data_root, "train")
     test_records = scan_tiles(config.data_root, "test")
@@ -279,21 +323,36 @@ def run_preprocessing(config: ExperimentConfig, preprocessing_dir: str | Path) -
         stratify=config.stratify_split,
     )
 
-    LOGGER.info("Fitting AEF PCA on %d train tiles", len(train_tile_ids))
-    aef_pca = fit_aef_pca_model(train_records, train_tile_ids, config)
-    save_json(preprocessing_dir / "aef_pca.json", aef_pca.to_payload())
+    aef_pca: AefPcaModel | None = None
+    if config.use_aef_features and config.aef_pca_dim > 0:
+        LOGGER.info("Fitting AEF PCA on %d train tiles", len(train_tile_ids))
+        aef_pca = fit_aef_pca_model(train_records, train_tile_ids, config)
+        save_json(preprocessing_dir / "aef_pca.json", aef_pca.to_payload())
+    else:
+        LOGGER.info("Skipping AEF PCA because AEF features are disabled")
+        save_json(preprocessing_dir / "aef_pca.json", {"disabled": True, "aef_pca_dim": 0})
 
     tile_metadata: dict[str, dict[str, Any]] = {"train": {}, "test": {}}
+    skipped_tiles: dict[str, list[str]] = {"train": [], "test": []}
 
     LOGGER.info("Building train feature caches")
-    train_feature_metadata, feature_names = _run_feature_stage(
+    train_feature_metadata, feature_names, skipped_train_tiles = _run_feature_stage(
         train_records,
         split="train",
         preprocessing_dir=preprocessing_dir,
         config=config,
         aef_pca=aef_pca,
     )
+    skipped_tiles["train"] = skipped_train_tiles
+    train_tile_ids = [tile_id for tile_id in train_tile_ids if tile_id in train_feature_metadata]
+    val_tile_ids = [tile_id for tile_id in val_tile_ids if tile_id in train_feature_metadata]
+    if not train_tile_ids:
+        raise RuntimeError("No train tiles remained after preprocessing")
+    if not val_tile_ids:
+        LOGGER.warning("No validation tiles remained after preprocessing")
     for tile_id, record in train_records.items():
+        if tile_id not in train_feature_metadata:
+            continue
         tile_metadata["train"][tile_id] = {
             **record.to_dict(),
             **train_feature_metadata[tile_id],
@@ -301,14 +360,17 @@ def run_preprocessing(config: ExperimentConfig, preprocessing_dir: str | Path) -
         }
 
     LOGGER.info("Building test feature caches")
-    test_feature_metadata, _ = _run_feature_stage(
+    test_feature_metadata, _, skipped_test_tiles = _run_feature_stage(
         test_records,
         split="test",
         preprocessing_dir=preprocessing_dir,
         config=config,
         aef_pca=aef_pca,
     )
+    skipped_tiles["test"] = skipped_test_tiles
     for tile_id, record in test_records.items():
+        if tile_id not in test_feature_metadata:
+            continue
         tile_metadata["test"][tile_id] = {
             **record.to_dict(),
             **test_feature_metadata[tile_id],
@@ -332,13 +394,16 @@ def run_preprocessing(config: ExperimentConfig, preprocessing_dir: str | Path) -
         "preprocessing_dir": str(preprocessing_dir),
         "num_train_tiles": len(train_records),
         "num_test_tiles": len(test_records),
+        "num_cached_train_tiles": len(train_feature_metadata),
+        "num_cached_test_tiles": len(test_feature_metadata),
         "train_tiles": train_tile_ids,
         "val_tiles": val_tile_ids,
+        "skipped_tiles": skipped_tiles,
         "feature_names": feature_names,
         "positive_fractions": positive_fractions,
-        "pca_explained_variance_ratio": aef_pca.explained_variance_ratio.tolist(),
+        "pca_explained_variance_ratio": aef_pca.explained_variance_ratio.tolist() if aef_pca is not None else [],
     }
-    save_json(preprocessing_dir / "summary.json", summary)
+    save_json(summary_path, summary)
     return summary
 
 
@@ -350,4 +415,6 @@ def load_aef_pca(preprocessing_dir: str | Path) -> AefPcaModel:
         import json
 
         payload = json.load(handle)
+    if payload.get("disabled"):
+        raise RuntimeError(f"AEF PCA is disabled in preprocessing artifacts under {preprocessing_dir}")
     return AefPcaModel.from_payload(payload)

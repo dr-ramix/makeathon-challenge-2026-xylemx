@@ -6,6 +6,7 @@ import unittest
 
 import numpy as np
 
+from xylemx.config import ExperimentConfig
 from xylemx.preprocessing.features import aggregate_temporal_stack, build_feature_names
 
 
@@ -34,10 +35,16 @@ class FeatureAggregationTests(unittest.TestCase):
         self.assertGreater(float(delta[0, 0]), 0.0)
 
     def test_feature_name_count_matches_spec(self) -> None:
-        names = build_feature_names(aef_pca_dim=8)
-        self.assertEqual(len(names), 47)
-        self.assertEqual(names[0], "s2_mean_B01")
-        self.assertEqual(names[-1], "aef_mean_pc08")
+        names = build_feature_names(ExperimentConfig(aef_pca_dim=8, temporal_feature_mode="snapshot_pair"))
+        self.assertEqual(len(names), 63)
+        self.assertEqual(names[0], "s2_early_B01")
+        self.assertEqual(names[-1], "aef_delta_pc08")
+
+    def test_feature_name_count_respects_aef_dimension(self) -> None:
+        config = ExperimentConfig(aef_pca_dim=4, temporal_feature_mode="snapshot_pair")
+        names = build_feature_names(config)
+        self.assertEqual(len(names), 51)
+        self.assertEqual(names[-1], "aef_delta_pc04")
 
 
 if __name__ == "__main__":
