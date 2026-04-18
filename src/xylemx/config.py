@@ -47,7 +47,7 @@ class ExperimentConfig:
     mixed_precision: bool = True
     ema: bool = False
     ema_decay: float = 0.999
-    early_stopping_patience: int = 10
+    early_stopping_patience: int = 100
 
     loss: str = "bce_dice"
     bce_weight: float = 0.7
@@ -66,6 +66,10 @@ class ExperimentConfig:
     snapshot_mode: bool = True
     early_window_start_year: int = 2020
     early_window_end_year: int = 2021
+    middle1_window_start_year: int = 2022
+    middle1_window_end_year: int = 2022
+    middle2_window_start_year: int = 2023
+    middle2_window_end_year: int = 2023
     late_window_start_year: int = 2024
     late_window_end_year: int = 2025
     selection_method: str = "best_valid"
@@ -152,6 +156,11 @@ class ExperimentConfig:
     visualization_include_probability: bool = True
     visualization_include_input_preview: bool = True
     visualization_use_best_checkpoint: bool = False
+    visualization_include_overlays: bool = True
+    visualization_include_error_map: bool = True
+    visualization_save_preview_png: bool = True
+    visualization_dpi: int = 220
+    visualization_every_n_epochs: int = 5
     save_probability_rasters: bool = False
     save_input_previews: bool = True
 

@@ -20,10 +20,7 @@ from xylemx.data.io import AEF_PATTERN, S1_PATTERN, S2_PATTERN, TileRecord, get_
 LOGGER = logging.getLogger(__name__)
 
 S2_BAND_NAMES = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12"]
-S2_EARLY_CHANNELS = [f"s2_early_{band}" for band in S2_BAND_NAMES]
-S2_LATE_CHANNELS = [f"s2_late_{band}" for band in S2_BAND_NAMES]
-S2_DELTA_CHANNELS = [f"s2_delta_{band}" for band in S2_BAND_NAMES]
-S1_CHANNELS = ["s1_early", "s1_late", "s1_delta"]
+SNAPSHOT_STAGE_NAMES = ("early", "middle1", "middle2", "late")
 
 
 class TilePreprocessingError(RuntimeError):
@@ -108,24 +105,51 @@ class SnapshotCandidate:
 
 @dataclass(slots=True)
 class SnapshotSelection:
-    """Selected early/late snapshots plus selection audit information."""
+    """Selected snapshots plus selection audit information."""
 
-    early: SnapshotCandidate | None
-    late: SnapshotCandidate | None
+    selected: dict[str, SnapshotCandidate | None]
     metadata: dict[str, Any]
 
 
 def build_feature_names(config: ExperimentConfig) -> list[str]:
     """Return the stable feature-channel ordering."""
 
-    if config.temporal_feature_mode != "snapshot_pair":
+    if config.temporal_feature_mode not in {"snapshot_pair", "snapshot_quad"}:
         raise ValueError(f"Unsupported temporal_feature_mode: {config.temporal_feature_mode}")
-    names = S2_EARLY_CHANNELS + S2_LATE_CHANNELS + S2_DELTA_CHANNELS + S1_CHANNELS
+    stage_names = [stage_name for stage_name, *_ in _snapshot_stage_specs(config)]
+    names: list[str] = []
+    for stage_name in stage_names:
+        names.extend(f"s2_{stage_name}_{band}" for band in S2_BAND_NAMES)
+    if config.temporal_feature_mode in {"snapshot_pair", "snapshot_quad"}:
+        names.extend(f"s2_delta_{band}" for band in S2_BAND_NAMES)
+    for stage_name in stage_names:
+        names.append(f"s1_{stage_name}")
+    if config.temporal_feature_mode in {"snapshot_pair", "snapshot_quad"}:
+        names.append("s1_delta")
     if config.aef_pca_dim > 0:
-        names.extend(f"aef_early_pc{index + 1:02d}" for index in range(config.aef_pca_dim))
-        names.extend(f"aef_late_pc{index + 1:02d}" for index in range(config.aef_pca_dim))
-        names.extend(f"aef_delta_pc{index + 1:02d}" for index in range(config.aef_pca_dim))
+        for stage_name in stage_names:
+            names.extend(f"aef_{stage_name}_pc{index + 1:02d}" for index in range(config.aef_pca_dim))
+        if config.temporal_feature_mode in {"snapshot_pair", "snapshot_quad"}:
+            names.extend(f"aef_delta_pc{index + 1:02d}" for index in range(config.aef_pca_dim))
     return names
+
+
+def _snapshot_stage_specs(config: ExperimentConfig) -> list[tuple[str, int, int, int]]:
+    """Return the ordered snapshot stages for the active temporal feature mode."""
+
+    if config.temporal_feature_mode == "snapshot_pair":
+        return [
+            ("early", config.early_window_start_year, config.early_window_end_year, config.early_window_start_year),
+            ("late", config.late_window_start_year, config.late_window_end_year, config.late_window_end_year),
+        ]
+    if config.temporal_feature_mode == "snapshot_quad":
+        return [
+            ("early", config.early_window_start_year, config.early_window_end_year, config.early_window_start_year),
+            ("middle1", config.middle1_window_start_year, config.middle1_window_end_year, config.middle1_window_start_year),
+            ("middle2", config.middle2_window_start_year, config.middle2_window_end_year, config.middle2_window_start_year),
+            ("late", config.late_window_start_year, config.late_window_end_year, config.late_window_end_year),
+        ]
+    raise ValueError(f"Unsupported temporal_feature_mode: {config.temporal_feature_mode}")
 
 
 def _parse_match(pattern, path: Path) -> tuple[str, ...]:
@@ -314,31 +338,25 @@ def _select_s2_snapshots(record: TileRecord, dst_profile: dict[str, Any], config
             )
         )
 
-    early, early_note = _choose_candidate(
-        candidates,
-        start_year=config.early_window_start_year,
-        end_year=config.early_window_end_year,
-        target_year=config.early_window_start_year,
-        selection_method=config.selection_method,
-        fallback_to_nearest=config.fallback_to_nearest_valid_year,
-    )
-    late, late_note = _choose_candidate(
-        candidates,
-        start_year=config.late_window_start_year,
-        end_year=config.late_window_end_year,
-        target_year=config.late_window_end_year,
-        selection_method=config.selection_method,
-        fallback_to_nearest=config.fallback_to_nearest_valid_year,
-    )
+    selected: dict[str, SnapshotCandidate | None] = {}
+    fallback_notes: list[str] = []
+    metadata: dict[str, Any] = {}
+    for stage_name, start_year, end_year, target_year in _snapshot_stage_specs(config):
+        chosen, note = _choose_candidate(
+            candidates,
+            start_year=start_year,
+            end_year=end_year,
+            target_year=target_year,
+            selection_method=config.selection_method,
+            fallback_to_nearest=config.fallback_to_nearest_valid_year,
+        )
+        selected[stage_name] = chosen
+        metadata[f"selected_{stage_name}_s2"] = chosen.describe() if chosen is not None else None
+        if note:
+            fallback_notes.append(f"{stage_name}:{note}")
     return SnapshotSelection(
-        early=early,
-        late=late,
-        metadata={
-            "selected_early_s2": early.describe() if early is not None else None,
-            "selected_late_s2": late.describe() if late is not None else None,
-            "fallback_decisions": [note for note in [early_note, late_note] if note],
-            "skipped_bad_snapshots": skipped,
-        },
+        selected=selected,
+        metadata={**metadata, "fallback_decisions": fallback_notes, "skipped_bad_snapshots": skipped},
     )
 
 
@@ -392,31 +410,25 @@ def _select_s1_snapshots(record: TileRecord, dst_profile: dict[str, Any], config
             )
         )
 
-    early, early_note = _choose_candidate(
-        month_candidates,
-        start_year=config.early_window_start_year,
-        end_year=config.early_window_end_year,
-        target_year=config.early_window_start_year,
-        selection_method=config.selection_method,
-        fallback_to_nearest=config.fallback_to_nearest_valid_year,
-    )
-    late, late_note = _choose_candidate(
-        month_candidates,
-        start_year=config.late_window_start_year,
-        end_year=config.late_window_end_year,
-        target_year=config.late_window_end_year,
-        selection_method=config.selection_method,
-        fallback_to_nearest=config.fallback_to_nearest_valid_year,
-    )
+    selected: dict[str, SnapshotCandidate | None] = {}
+    fallback_notes: list[str] = []
+    metadata: dict[str, Any] = {}
+    for stage_name, start_year, end_year, target_year in _snapshot_stage_specs(config):
+        chosen, note = _choose_candidate(
+            month_candidates,
+            start_year=start_year,
+            end_year=end_year,
+            target_year=target_year,
+            selection_method=config.selection_method,
+            fallback_to_nearest=config.fallback_to_nearest_valid_year,
+        )
+        selected[stage_name] = chosen
+        metadata[f"selected_{stage_name}_s1"] = chosen.describe() if chosen is not None else None
+        if note:
+            fallback_notes.append(f"{stage_name}:{note}")
     return SnapshotSelection(
-        early=early,
-        late=late,
-        metadata={
-            "selected_early_s1": early.describe() if early is not None else None,
-            "selected_late_s1": late.describe() if late is not None else None,
-            "fallback_decisions": [note for note in [early_note, late_note] if note],
-            "skipped_bad_snapshots": skipped,
-        },
+        selected=selected,
+        metadata={**metadata, "fallback_decisions": fallback_notes, "skipped_bad_snapshots": skipped},
     )
 
 
@@ -428,28 +440,29 @@ def _collect_aef_paths(record: TileRecord) -> list[tuple[int, Path]]:
     return sorted(pairs, key=lambda item: item[0])
 
 
-def _select_aef_paths(record: TileRecord, config: ExperimentConfig) -> tuple[tuple[int, Path] | None, tuple[int, Path] | None, dict[str, Any]]:
+def _select_aef_paths(
+    record: TileRecord,
+    config: ExperimentConfig,
+) -> tuple[dict[str, tuple[int, Path] | None], dict[str, Any]]:
     year_to_path = {year: path for year, path in _collect_aef_paths(record)}
-    early, early_note = _choose_year_path(
-        year_to_path,
-        start_year=config.early_window_start_year,
-        end_year=config.early_window_end_year,
-        target_year=config.early_window_start_year,
-        fallback_to_nearest=config.fallback_to_nearest_valid_year,
-    )
-    late, late_note = _choose_year_path(
-        year_to_path,
-        start_year=config.late_window_start_year,
-        end_year=config.late_window_end_year,
-        target_year=config.late_window_end_year,
-        fallback_to_nearest=config.fallback_to_nearest_valid_year,
-    )
-    return early, late, {
-        "selected_early_aef": {"year": early[0], "path": str(early[1])} if early is not None else None,
-        "selected_late_aef": {"year": late[0], "path": str(late[1])} if late is not None else None,
-        "fallback_decisions": [note for note in [early_note, late_note] if note],
-        "skipped_bad_snapshots": [],
-    }
+    selected: dict[str, tuple[int, Path] | None] = {}
+    metadata: dict[str, Any] = {}
+    fallback_notes: list[str] = []
+    for stage_name, start_year, end_year, target_year in _snapshot_stage_specs(config):
+        chosen, note = _choose_year_path(
+            year_to_path,
+            start_year=start_year,
+            end_year=end_year,
+            target_year=target_year,
+            fallback_to_nearest=config.fallback_to_nearest_valid_year,
+        )
+        selected[stage_name] = chosen
+        metadata[f"selected_{stage_name}_aef"] = (
+            {"year": chosen[0], "path": str(chosen[1])} if chosen is not None else None
+        )
+        if note:
+            fallback_notes.append(f"{stage_name}:{note}")
+    return selected, {**metadata, "fallback_decisions": fallback_notes, "skipped_bad_snapshots": []}
 
 
 def fit_aef_pca_model(
@@ -467,12 +480,14 @@ def fit_aef_pca_model(
     total_rasters = 0
     for tile_id in train_tile_ids:
         record = records[tile_id]
-        early, late, _ = _select_aef_paths(record, config)
+        selected_paths_by_stage, _ = _select_aef_paths(record, config)
         selected_paths = []
-        if early is not None:
-            selected_paths.append(early[1])
-        if late is not None and (early is None or late[1] != early[1]):
-            selected_paths.append(late[1])
+        for chosen in selected_paths_by_stage.values():
+            if chosen is None:
+                continue
+            path = chosen[1]
+            if path not in selected_paths:
+                selected_paths.append(path)
         LOGGER.info("Collecting AEF PCA samples for tile %s from %d snapshot(s)", tile_id, len(selected_paths))
         for path in selected_paths:
             total_rasters += 1
@@ -596,15 +611,22 @@ def _build_s2_snapshot_features(
     selection = _select_s2_snapshots(record, dst_profile, config)
     height = int(dst_profile["height"])
     width = int(dst_profile["width"])
-    early = selection.early.array if selection.early is not None else _empty_block(len(S2_BAND_NAMES), height, width)
-    late = selection.late.array if selection.late is not None else _empty_block(len(S2_BAND_NAMES), height, width)
+    stage_arrays = [
+        selection.selected[stage_name].array
+        if selection.selected.get(stage_name) is not None
+        else _empty_block(len(S2_BAND_NAMES), height, width)
+        for stage_name, *_ in _snapshot_stage_specs(config)
+    ]
     _enforce_required_modality(
         modality_name="Sentinel-2",
         require_modality=config.require_s2,
-        selection_present=selection.early is not None and selection.late is not None,
+        selection_present=all(selection.selected.get(stage_name) is not None for stage_name, *_ in _snapshot_stage_specs(config)),
         config=config,
     )
-    features = np.concatenate([early, late, _delta_block(late.copy(), early.copy())], axis=0).astype(np.float32)
+    feature_blocks = stage_arrays.copy()
+    if config.temporal_feature_mode in {"snapshot_pair", "snapshot_quad"}:
+        feature_blocks.append(_delta_block(stage_arrays[-1].copy(), stage_arrays[0].copy()))
+    features = np.concatenate(feature_blocks, axis=0).astype(np.float32)
     metadata = {
         "num_s2_candidate_snapshots": len(record.sentinel2_files),
         **selection.metadata,
@@ -620,15 +642,22 @@ def _build_s1_snapshot_features(
     selection = _select_s1_snapshots(record, dst_profile, config)
     height = int(dst_profile["height"])
     width = int(dst_profile["width"])
-    early = selection.early.array if selection.early is not None else _empty_block(1, height, width)
-    late = selection.late.array if selection.late is not None else _empty_block(1, height, width)
+    stage_arrays = [
+        selection.selected[stage_name].array
+        if selection.selected.get(stage_name) is not None
+        else _empty_block(1, height, width)
+        for stage_name, *_ in _snapshot_stage_specs(config)
+    ]
     _enforce_required_modality(
         modality_name="Sentinel-1",
         require_modality=config.require_s1,
-        selection_present=selection.early is not None or selection.late is not None,
+        selection_present=any(selection.selected.get(stage_name) is not None for stage_name, *_ in _snapshot_stage_specs(config)),
         config=config,
     )
-    features = np.concatenate([early, late, _delta_block(late.copy(), early.copy())], axis=0).astype(np.float32)
+    feature_blocks = stage_arrays.copy()
+    if config.temporal_feature_mode in {"snapshot_pair", "snapshot_quad"}:
+        feature_blocks.append(_delta_block(stage_arrays[-1].copy(), stage_arrays[0].copy()))
+    features = np.concatenate(feature_blocks, axis=0).astype(np.float32)
     metadata = {
         "num_s1_candidate_snapshots": len(record.sentinel1_files),
         **selection.metadata,
@@ -653,55 +682,59 @@ def _build_aef_snapshot_features(
             selection_present=False,
             config=config,
         )
-        features = np.concatenate([empty, empty.copy(), empty.copy()], axis=0) if config.aef_pca_dim > 0 else np.empty((0, height, width), dtype=np.float32)
+        stage_count = len(_snapshot_stage_specs(config))
+        feature_blocks = [empty.copy() for _ in range(stage_count)]
+        if config.temporal_feature_mode in {"snapshot_pair", "snapshot_quad"} and config.aef_pca_dim > 0:
+            feature_blocks.append(empty.copy())
+        features = np.concatenate(feature_blocks, axis=0) if config.aef_pca_dim > 0 else np.empty((0, height, width), dtype=np.float32)
         return features, {
             "num_aef_candidate_snapshots": len(record.aef_files),
-            "selected_early_aef": None,
-            "selected_late_aef": None,
+            **{f"selected_{stage_name}_aef": None for stage_name, *_ in _snapshot_stage_specs(config)},
             "fallback_decisions": [],
             "skipped_bad_snapshots": [],
         }
 
-    early_path, late_path, metadata = _select_aef_paths(record, config)
-    early_array = empty.copy()
-    late_array = empty.copy()
+    selected_paths, metadata = _select_aef_paths(record, config)
+    stage_arrays = {stage_name: empty.copy() for stage_name, *_ in _snapshot_stage_specs(config)}
     skipped = list(metadata["skipped_bad_snapshots"])
-    early_present = False
-    late_present = False
+    any_present = False
 
-    if early_path is not None:
-        projected, _valid_mask, valid_fraction = _load_projected_aef_snapshot(early_path[1], dst_profile, config, pca_model)
+    for stage_name, chosen in selected_paths.items():
+        if chosen is None:
+            continue
+        projected, _valid_mask, valid_fraction = _load_projected_aef_snapshot(chosen[1], dst_profile, config, pca_model)
         if projected is None:
-            skipped.append({"path": str(early_path[1]), "year": early_path[0], "valid_fraction": valid_fraction})
-        else:
-            early_array = projected
-            early_present = True
-    if late_path is not None:
-        projected, _valid_mask, valid_fraction = _load_projected_aef_snapshot(late_path[1], dst_profile, config, pca_model)
-        if projected is None:
-            skipped.append({"path": str(late_path[1]), "year": late_path[0], "valid_fraction": valid_fraction})
-        else:
-            late_array = projected
-            late_present = True
+            skipped.append({"path": str(chosen[1]), "year": chosen[0], "stage": stage_name, "valid_fraction": valid_fraction})
+            continue
+        stage_arrays[stage_name] = projected
+        any_present = True
 
     _enforce_required_modality(
         modality_name="AEF",
         require_modality=config.require_aef,
-        selection_present=early_present or late_present,
+        selection_present=any_present,
         config=config,
     )
     metadata["skipped_bad_snapshots"] = skipped
-    features = np.concatenate([early_array, late_array, _delta_block(late_array.copy(), early_array.copy())], axis=0).astype(np.float32)
+    feature_blocks = [stage_arrays[stage_name] for stage_name, *_ in _snapshot_stage_specs(config)]
+    if config.temporal_feature_mode in {"snapshot_pair", "snapshot_quad"}:
+        feature_blocks.append(_delta_block(feature_blocks[-1].copy(), feature_blocks[0].copy()))
+    features = np.concatenate(feature_blocks, axis=0).astype(np.float32)
     metadata["num_aef_candidate_snapshots"] = len(record.aef_files)
     return features, metadata
 
 
-def build_preview_from_late_s2_features(s2_features: np.ndarray) -> np.ndarray | None:
+def build_preview_from_late_s2_features(s2_features: np.ndarray, config: ExperimentConfig) -> np.ndarray | None:
     """Create a lightweight RGB-like preview from the late Sentinel-2 snapshot."""
 
-    if s2_features.shape[0] < len(S2_BAND_NAMES) * 2:
+    if s2_features.shape[0] < len(S2_BAND_NAMES):
         return None
-    offset = len(S2_BAND_NAMES)
+    if config.temporal_feature_mode == "snapshot_pair":
+        offset = len(S2_BAND_NAMES)
+    elif config.temporal_feature_mode == "snapshot_quad":
+        offset = len(S2_BAND_NAMES) * 3
+    else:
+        return None
     rgb = np.stack([s2_features[offset + 3], s2_features[offset + 2], s2_features[offset + 1]], axis=0).astype(np.float32)
     preview = np.zeros_like(rgb, dtype=np.uint8)
     for channel_index in range(3):
@@ -723,7 +756,7 @@ def build_multimodal_feature_pack(
 ) -> FeaturePack:
     """Build the final per-tile feature tensor for one tile."""
 
-    if config.temporal_feature_mode != "snapshot_pair":
+    if config.temporal_feature_mode not in {"snapshot_pair", "snapshot_quad"}:
         raise ValueError(f"Unsupported temporal_feature_mode: {config.temporal_feature_mode}")
 
     dst_profile = get_raster_profile(record.reference_s2_path)
@@ -735,7 +768,7 @@ def build_multimodal_feature_pack(
     if features.shape[0] == 0:
         raise TilePreprocessingError("No feature channels were produced for the tile")
     valid_mask = np.any(np.isfinite(features), axis=0)
-    preview = build_preview_from_late_s2_features(s2_features) if config.save_input_previews else None
+    preview = build_preview_from_late_s2_features(s2_features, config) if config.save_input_previews else None
     feature_names = build_feature_names(config)
 
     metadata: dict[str, Any] = {
@@ -757,14 +790,11 @@ def build_multimodal_feature_pack(
     ]
 
     LOGGER.info(
-        "Tile %s selected snapshots | s2 early=%s late=%s | s1 early=%s late=%s | aef early=%s late=%s | fallbacks=%s",
+        "Tile %s selected snapshots | s2=%s | s1=%s | aef=%s | fallbacks=%s",
         record.tile_id,
-        (s2_metadata["selected_early_s2"] or {}).get("path"),
-        (s2_metadata["selected_late_s2"] or {}).get("path"),
-        (s1_metadata["selected_early_s1"] or {}).get("path"),
-        (s1_metadata["selected_late_s1"] or {}).get("path"),
-        (aef_metadata["selected_early_aef"] or {}).get("path"),
-        (aef_metadata["selected_late_aef"] or {}).get("path"),
+        {stage_name: (s2_metadata.get(f"selected_{stage_name}_s2") or {}).get("path") for stage_name, *_ in _snapshot_stage_specs(config)},
+        {stage_name: (s1_metadata.get(f"selected_{stage_name}_s1") or {}).get("path") for stage_name, *_ in _snapshot_stage_specs(config)},
+        {stage_name: (aef_metadata.get(f"selected_{stage_name}_aef") or {}).get("path") for stage_name, *_ in _snapshot_stage_specs(config)},
         fallback_notes if fallback_notes else "none",
     )
 

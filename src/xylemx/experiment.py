@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import re
@@ -105,3 +106,45 @@ def save_resolved_config(config: ExperimentConfig, run_dir: str | Path) -> None:
     run_dir = Path(run_dir)
     save_yaml(run_dir / "config.yaml", asdict(config))
     save_json(run_dir / "config.json", asdict(config))
+
+
+def append_run_record(output_root: str | Path, record: dict[str, Any]) -> None:
+    """Append a finished-run record to shared JSON and CSV leaderboards."""
+
+    output_root = Path(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    leaderboard_json = output_root / "leaderboard.json"
+    existing: list[dict[str, Any]]
+    if leaderboard_json.exists():
+        with leaderboard_json.open("r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        existing = loaded if isinstance(loaded, list) else []
+    else:
+        existing = []
+
+    run_name = str(record.get("run_name", ""))
+    existing = [item for item in existing if str(item.get("run_name", "")) != run_name]
+    existing.append(record)
+    existing.sort(
+        key=lambda item: (
+            -float(item.get("best_val_dice", float("-inf"))),
+            -float(item.get("best_val_iou", float("-inf"))),
+            float(item.get("duration_seconds", float("inf"))),
+            str(item.get("run_name", "")),
+        )
+    )
+    save_json(leaderboard_json, existing)
+
+    fieldnames: list[str] = []
+    for item in existing:
+        for key in item:
+            if key not in fieldnames:
+                fieldnames.append(key)
+
+    leaderboard_csv = output_root / "leaderboard.csv"
+    with leaderboard_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in existing:
+            writer.writerow(item)

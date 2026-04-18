@@ -93,10 +93,15 @@ def predict_probability_map(
     with torch.no_grad():
         for start in range(0, len(patches), batch_size):
             batch_records = patches[start : start + batch_size]
-            batch_inputs = np.stack(
-                [features[:, patch.y : patch.y + patch_size, patch.x : patch.x + patch_size] for patch in batch_records],
-                axis=0,
-            )
+            batch_inputs_list: list[np.ndarray] = []
+            for patch in batch_records:
+                patch_array = features[:, patch.y : patch.y + patch.height, patch.x : patch.x + patch.width]
+                if patch.height != patch_size or patch.width != patch_size:
+                    padded = np.zeros((features.shape[0], patch_size, patch_size), dtype=np.float32)
+                    padded[:, : patch.height, : patch.width] = patch_array
+                    patch_array = padded
+                batch_inputs_list.append(patch_array)
+            batch_inputs = np.stack(batch_inputs_list, axis=0)
             inputs = torch.from_numpy(batch_inputs).float().to(device)
 
             mode_probabilities: list[torch.Tensor] = []
@@ -111,9 +116,10 @@ def predict_probability_map(
 
             probabilities = torch.mean(torch.stack(mode_probabilities, dim=0), dim=0).cpu().numpy()[:, 0]
             for patch, patch_prob in zip(batch_records, probabilities, strict=True):
-                y_slice = slice(patch.y, patch.y + patch_size)
-                x_slice = slice(patch.x, patch.x + patch_size)
-                prob_sum[y_slice, x_slice] += patch_prob
+                valid_prob = patch_prob[: patch.height, : patch.width]
+                y_slice = slice(patch.y, patch.y + patch.height)
+                x_slice = slice(patch.x, patch.x + patch.width)
+                prob_sum[y_slice, x_slice] += valid_prob
                 count_sum[y_slice, x_slice] += 1.0
 
     probability_map = np.divide(prob_sum, np.maximum(count_sum, 1.0))

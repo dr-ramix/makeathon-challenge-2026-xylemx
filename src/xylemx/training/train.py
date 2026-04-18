@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import logging
 import math
 import random
 from contextlib import nullcontext
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +30,7 @@ from xylemx.data.io import (
     scan_tiles,
     write_single_band_geotiff,
 )
-from xylemx.experiment import configure_logging, create_run_directory, save_json, save_resolved_config
+from xylemx.experiment import append_run_record, configure_logging, create_run_directory, save_json, save_resolved_config
 from xylemx.models.baseline import build_model
 from xylemx.models.losses import build_loss
 from xylemx.preprocessing.pipeline import run_preprocessing
@@ -41,6 +43,7 @@ from xylemx.training.metrics import (
     metrics_from_confusion_counts,
 )
 from xylemx.visualization.render import save_bw_mask, save_panel, save_probability_map
+from xylemx.visualization.render import save_confusion_map, save_overlay_image, save_preview_image
 
 LOGGER = logging.getLogger(__name__)
 
@@ -410,23 +413,88 @@ def _save_tile_visualizations(
             tta_modes=config.tta_modes,
         )
         target = np.load(get_target_path(preprocessing_dir, tile_id)).astype(np.float32)
+        ignore_mask = np.load(get_ignore_mask_path(preprocessing_dir, tile_id)).astype(bool) | ~valid_mask
         binary = ((probability >= config.inference_threshold) & valid_mask).astype(np.float32)
 
         preview_path = get_preview_path(preprocessing_dir, "train", tile_id)
         preview = np.load(preview_path) if preview_path.exists() else None
 
         split_dir = output_dir / split
+        if config.visualization_save_preview_png and config.visualization_include_input_preview:
+            save_preview_image(split_dir / f"sample_{tile_id}_epoch_{epoch:03d}_preview.png", preview)
         save_bw_mask(split_dir / f"sample_{tile_id}_epoch_{epoch:03d}_pred.png", binary)
         save_bw_mask(split_dir / f"sample_{tile_id}_epoch_{epoch:03d}_true.png", target)
         if config.visualization_include_probability:
             save_probability_map(split_dir / f"sample_{tile_id}_epoch_{epoch:03d}_prob.png", probability)
+        if config.visualization_include_overlays and config.visualization_include_input_preview:
+            save_overlay_image(
+                split_dir / f"sample_{tile_id}_epoch_{epoch:03d}_true_overlay.png",
+                preview=preview,
+                mask=target,
+                color=(59, 130, 246),
+            )
+            save_overlay_image(
+                split_dir / f"sample_{tile_id}_epoch_{epoch:03d}_pred_overlay.png",
+                preview=preview,
+                mask=binary,
+                color=(236, 72, 153),
+            )
+        if config.visualization_include_error_map:
+            save_confusion_map(
+                split_dir / f"sample_{tile_id}_epoch_{epoch:03d}_error.png",
+                true_mask=target,
+                pred_mask=binary,
+                ignore_mask=ignore_mask,
+            )
         save_panel(
             split_dir / f"sample_{tile_id}_epoch_{epoch:03d}_panel.png",
             preview=preview if config.visualization_include_input_preview else None,
             true_mask=target,
             probability=probability if config.visualization_include_probability else None,
             pred_mask=binary,
+            ignore_mask=ignore_mask,
+            dpi=config.visualization_dpi,
         )
+
+
+def _should_save_epoch_visualizations(epoch: int, config: ExperimentConfig) -> bool:
+    """Decide whether to save qualitative epoch visualizations."""
+
+    if config.visualization_every_n_epochs <= 0:
+        return False
+    return epoch == 1 or epoch % config.visualization_every_n_epochs == 0 or epoch == config.epochs
+
+
+def _try_save_epoch_visualizations(
+    model: torch.nn.Module,
+    *,
+    tile_ids: list[str],
+    split: str,
+    preprocessing_dir: Path,
+    output_dir: Path,
+    config: ExperimentConfig,
+    device: torch.device,
+    epoch: int,
+) -> bool:
+    """Save visualizations, returning False when disk exhaustion forces them off."""
+
+    try:
+        _save_tile_visualizations(
+            model,
+            tile_ids=tile_ids,
+            split=split,
+            preprocessing_dir=preprocessing_dir,
+            output_dir=output_dir,
+            config=config,
+            device=device,
+            epoch=epoch,
+        )
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            LOGGER.warning("Disabling further visualizations because the disk is full: %s", exc)
+            return False
+        raise
 
 
 def _save_checkpoint(
@@ -457,6 +525,7 @@ def _save_checkpoint(
 def train_model(config: ExperimentConfig) -> dict[str, Any]:
     """Run the full training pipeline and return the final metrics summary."""
 
+    started_at = datetime.now(timezone.utc)
     run_dir = create_run_directory(config)
     configure_logging(run_dir / "train.log")
     save_resolved_config(config, run_dir)
@@ -510,6 +579,7 @@ def train_model(config: ExperimentConfig) -> dict[str, Any]:
     best_state: dict[str, torch.Tensor] | None = None
     epochs_without_improvement = 0
     history: list[dict[str, float | int]] = []
+    visualization_enabled = True
 
     for epoch in range(1, effective_config.epochs + 1):
         train_summary = _train_one_epoch(
@@ -613,27 +683,29 @@ def train_model(config: ExperimentConfig) -> dict[str, Any]:
             visualization_model.to(device)
             visualization_model.eval()
 
-        epoch_visual_dir = run_dir / "visualizations" / f"epoch_{epoch:03d}"
-        _save_tile_visualizations(
-            visualization_model,
-            tile_ids=fixed_train_tiles,
-            split="train",
-            preprocessing_dir=preprocessing_dir,
-            output_dir=epoch_visual_dir,
-            config=effective_config,
-            device=device,
-            epoch=epoch,
-        )
-        _save_tile_visualizations(
-            visualization_model,
-            tile_ids=fixed_val_tiles,
-            split="val",
-            preprocessing_dir=preprocessing_dir,
-            output_dir=epoch_visual_dir,
-            config=effective_config,
-            device=device,
-            epoch=epoch,
-        )
+        if visualization_enabled and _should_save_epoch_visualizations(epoch, effective_config):
+            epoch_visual_dir = run_dir / "visualizations" / f"epoch_{epoch:03d}"
+            visualization_enabled = _try_save_epoch_visualizations(
+                visualization_model,
+                tile_ids=fixed_train_tiles,
+                split="train",
+                preprocessing_dir=preprocessing_dir,
+                output_dir=epoch_visual_dir,
+                config=effective_config,
+                device=device,
+                epoch=epoch,
+            )
+            if visualization_enabled:
+                visualization_enabled = _try_save_epoch_visualizations(
+                    visualization_model,
+                    tile_ids=fixed_val_tiles,
+                    split="val",
+                    preprocessing_dir=preprocessing_dir,
+                    output_dir=epoch_visual_dir,
+                    config=effective_config,
+                    device=device,
+                    epoch=epoch,
+                )
 
         if epochs_without_improvement >= effective_config.early_stopping_patience:
             LOGGER.info("Early stopping triggered after epoch %d", epoch)
@@ -661,24 +733,107 @@ def train_model(config: ExperimentConfig) -> dict[str, Any]:
         device=device,
         prediction_dir=run_dir / "predictions" / "val",
     )
-    _save_tile_visualizations(
-        best_model,
-        tile_ids=fixed_val_tiles,
-        split="val",
-        preprocessing_dir=preprocessing_dir,
-        output_dir=run_dir / "visualizations" / "best",
-        config=effective_config,
-        device=device,
-        epoch=best_epoch,
-    )
+    if visualization_enabled:
+        visualization_enabled = _try_save_epoch_visualizations(
+            best_model,
+            tile_ids=fixed_val_tiles,
+            split="val",
+            preprocessing_dir=preprocessing_dir,
+            output_dir=run_dir / "visualizations" / "best",
+            config=effective_config,
+            device=device,
+            epoch=best_epoch,
+        )
 
     final_summary = {
+        "run_name": run_dir.name,
         "run_dir": str(run_dir),
         "preprocessing_dir": str(preprocessing_dir),
         "best_epoch": best_epoch,
+        "best_val_iou": float(best_val_summary["iou"]),
+        "best_val_f1": float(best_val_summary["f1"]),
+        "best_val_accuracy": float(best_val_summary["accuracy"]),
+        "best_val_precision": float(best_val_summary["precision"]),
+        "best_val_recall": float(best_val_summary["recall"]),
         "best_val_dice": float(best_val_summary["dice"]),
         "history": history,
     }
+    finished_at = datetime.now(timezone.utc)
+    duration_seconds = float((finished_at - started_at).total_seconds())
+    final_summary["started_at_utc"] = started_at.isoformat()
+    final_summary["finished_at_utc"] = finished_at.isoformat()
+    final_summary["duration_seconds"] = duration_seconds
+    final_summary["duration_minutes"] = duration_seconds / 60.0
+    final_summary["epochs_completed"] = len(history)
+    final_summary["epochs_requested"] = int(effective_config.epochs)
+    final_summary["stopped_early"] = len(history) < int(effective_config.epochs)
+    final_summary["visualizations_completed"] = visualization_enabled
     save_json(run_dir / "metrics" / "summary.json", final_summary)
+    save_json(
+        run_dir / "metrics" / "run_record.json",
+        {
+            "run_name": run_dir.name,
+            "run_dir": str(run_dir),
+            "model": effective_config.model,
+            "temporal_feature_mode": effective_config.temporal_feature_mode,
+            "preprocessing_dir": str(preprocessing_dir),
+            "started_at_utc": started_at.isoformat(),
+            "finished_at_utc": finished_at.isoformat(),
+            "duration_seconds": duration_seconds,
+            "duration_minutes": duration_seconds / 60.0,
+            "best_epoch": int(best_epoch),
+            "best_val_dice": float(best_val_summary["dice"]),
+            "best_val_iou": float(best_val_summary["iou"]),
+            "best_val_f1": float(best_val_summary["f1"]),
+            "best_val_accuracy": float(best_val_summary["accuracy"]),
+            "best_val_precision": float(best_val_summary["precision"]),
+            "best_val_recall": float(best_val_summary["recall"]),
+            "epochs_completed": len(history),
+            "epochs_requested": int(effective_config.epochs),
+            "stopped_early": len(history) < int(effective_config.epochs),
+            "batch_size": int(effective_config.batch_size),
+            "patch_size": int(effective_config.patch_size),
+            "lr": float(effective_config.lr),
+            "min_lr": float(effective_config.min_lr),
+            "scheduler": effective_config.scheduler,
+            "weight_decay": float(effective_config.weight_decay),
+            "dropout": float(effective_config.dropout),
+            "stochastic_depth": float(effective_config.stochastic_depth),
+            "ema": bool(effective_config.ema),
+        },
+    )
+    append_run_record(
+        effective_config.output_root,
+        {
+            "run_name": run_dir.name,
+            "model": effective_config.model,
+            "temporal_feature_mode": effective_config.temporal_feature_mode,
+            "preprocessing_dir": str(preprocessing_dir),
+            "run_dir": str(run_dir),
+            "started_at_utc": started_at.isoformat(),
+            "finished_at_utc": finished_at.isoformat(),
+            "duration_seconds": duration_seconds,
+            "duration_minutes": duration_seconds / 60.0,
+            "best_epoch": int(best_epoch),
+            "best_val_dice": float(best_val_summary["dice"]),
+            "best_val_iou": float(best_val_summary["iou"]),
+            "best_val_f1": float(best_val_summary["f1"]),
+            "best_val_accuracy": float(best_val_summary["accuracy"]),
+            "best_val_precision": float(best_val_summary["precision"]),
+            "best_val_recall": float(best_val_summary["recall"]),
+            "epochs_completed": len(history),
+            "epochs_requested": int(effective_config.epochs),
+            "stopped_early": len(history) < int(effective_config.epochs),
+            "batch_size": int(effective_config.batch_size),
+            "patch_size": int(effective_config.patch_size),
+            "lr": float(effective_config.lr),
+            "min_lr": float(effective_config.min_lr),
+            "scheduler": effective_config.scheduler,
+            "weight_decay": float(effective_config.weight_decay),
+            "dropout": float(effective_config.dropout),
+            "stochastic_depth": float(effective_config.stochastic_depth),
+            "ema": bool(effective_config.ema),
+        },
+    )
     LOGGER.info("Training complete. Best epoch=%d best_val_dice=%.4f", best_epoch, best_val_summary["dice"])
     return final_summary

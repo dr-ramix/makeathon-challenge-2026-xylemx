@@ -107,6 +107,38 @@ Typical workflow:
   output_dir=output/predictions/debug
 ```
 
+Supported model names now include:
+
+- `small_unet`
+- encoder-decoder variants use suffixes `*_unet`, `*_fpn`, `*_unetpp`, `*_upernet`, `*_deeplabv3plus`
+- CBAM attention variants use suffixes `*_unet_cbam`, `*_fpn_cbam`, `*_unetpp_cbam`, `*_upernet_cbam`, and `*_deeplabv3plus_cbam`
+- backbones currently include:
+  `resnet18`, `resnet34`, `resnet50`, `resnet101`
+  `efficientnet_b0`
+  `convnext_tiny`, `convnext_small`, `convnext_base`, `convnext_large`
+  `convnextv2_atto`, `convnextv2_femto`, `convnextv2_pico`, `convnextv2_nano`, `convnextv2_tiny`, `convnextv2_small`, `convnextv2_base`
+  `coatnet0`, `coatnet1`, `coatnet2`, `coatnet3`
+  `vgg11`, `vgg13`, `vgg16`, `vgg19`
+
+Examples:
+
+- `resnet50_unet`
+- `resnet50_fpn`
+- `resnet50_unetpp`
+- `resnet34_unet_cbam`
+- `resnet34_fpn_cbam`
+- `resnet34_fpn`
+- `convnext_tiny_fpn`
+- `convnext_tiny_upernet`
+- `convnext_tiny_deeplabv3plus`
+- `convnext_tiny_deeplabv3plus_cbam`
+- `convnextv2_tiny_unetpp`
+- `convnextv2_tiny_upernet`
+- `convnextv2_tiny_deeplabv3plus`
+- `coatnet0_fpn`
+- `coatnet0_upernet`
+- `vgg16_unetpp`
+
 ## Notes And Assumptions
 
 - The first baseline uses Sentinel-2 only and builds one early-year composite and one late-year composite per tile. It prefers `2020` and `2025`, and falls back to the earliest/latest available Sentinel-2 year when a tile is missing one of those endpoints.

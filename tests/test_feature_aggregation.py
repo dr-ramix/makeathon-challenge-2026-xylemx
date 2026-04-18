@@ -46,6 +46,18 @@ class FeatureAggregationTests(unittest.TestCase):
         self.assertEqual(len(names), 51)
         self.assertEqual(names[-1], "aef_delta_pc04")
 
+    def test_feature_name_count_matches_snapshot_quad_spec(self) -> None:
+        names = build_feature_names(ExperimentConfig(aef_pca_dim=8, temporal_feature_mode="snapshot_quad"))
+        self.assertEqual(len(names), 105)
+        self.assertEqual(names[0], "s2_early_B01")
+        self.assertEqual(names[12], "s2_middle1_B01")
+        self.assertEqual(names[24], "s2_middle2_B01")
+        self.assertEqual(names[36], "s2_late_B01")
+        self.assertEqual(names[48], "s2_delta_B01")
+        self.assertEqual(names[60], "s1_early")
+        self.assertEqual(names[64], "s1_delta")
+        self.assertEqual(names[-1], "aef_delta_pc08")
+
 
 if __name__ == "__main__":
     unittest.main()

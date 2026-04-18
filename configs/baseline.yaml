@@ -9,6 +9,7 @@ weight_decay: 0.0001
 dropout: 0.1
 num_workers: 4
 mixed_precision: true
+early_stopping_patience: 100
 loss: bce_dice
 bce_weight: 0.7
 dice_weight: 0.3
@@ -36,6 +37,7 @@ skip_tile_if_required_modality_missing: true
 cache_preprocessed: true
 rebuild_cache: false
 save_input_previews: true
+visualization_every_n_epochs: 5
 year_weight_2020: 0.9
 year_weight_2021: 0.94
 year_weight_2022: 0.98
