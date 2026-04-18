@@ -6,14 +6,55 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import rasterio
-from rasterio.features import shapes
-from shapely.geometry import shape
+from rasterio.features import geometry_mask, shapes
+from shapely.geometry import mapping, shape
+
+
+def _resolve_time_label(
+    value: int,
+    time_labels: list[str] | dict[int | str, str] | None,
+) -> int | str:
+    if time_labels is None:
+        return int(value)
+    if isinstance(time_labels, list):
+        return time_labels[int(value)]
+    if value in time_labels:
+        return time_labels[value]
+    key = str(value)
+    return time_labels.get(key, int(value))
+
+
+def _aggregate_polygon_time_step(
+    polygon,
+    time_data: np.ndarray,
+    *,
+    transform,
+    time_strategy: str,
+    time_labels: list[str] | dict[int | str, str] | None,
+) -> int | str | None:
+    polygon_mask = geometry_mask([mapping(polygon)], transform=transform, invert=True, out_shape=time_data.shape)
+    values = time_data[polygon_mask]
+    values = values[values >= 0]
+    if values.size == 0:
+        return None
+
+    time_strategy = time_strategy.lower()
+    if time_strategy == "majority":
+        chosen = int(np.bincount(values.astype(np.int64)).argmax())
+    elif time_strategy == "median":
+        chosen = int(np.round(np.median(values)))
+    else:
+        raise ValueError(f"Unsupported time_strategy: {time_strategy}")
+    return _resolve_time_label(chosen, time_labels)
 
 
 def raster_to_geojson(
     raster_path: str | Path,
     output_path: str | Path | None = None,
     min_area_ha: float = 0.5,
+    time_raster_path: str | Path | None = None,
+    time_labels: list[str] | dict[int | str, str] | None = None,
+    time_strategy: str = "majority",
 ) -> dict:
     """Convert a binary deforestation prediction raster to a GeoJSON FeatureCollection.
 
@@ -38,6 +79,13 @@ def raster_to_geojson(
             computed in the appropriate UTM projection so the filter is
             metric-accurate regardless of the raster's native CRS. Defaults
             to ``0.5``.
+        time_raster_path: Optional path to a companion single-band raster that
+            stores per-pixel time-bin predictions. Negative values are treated
+            as nodata. When provided, polygons receive an aggregated
+            ``time_step`` value.
+        time_labels: Optional labels for converting time-bin indices to strings.
+        time_strategy: Aggregation strategy for polygon timing. Supports
+            ``"majority"`` and ``"median"``.
 
     Returns:
         A GeoJSON-compatible ``dict`` representing a FeatureCollection. Each
@@ -65,6 +113,14 @@ def raster_to_geojson(
         data = src.read(1).astype(np.uint8)
         transform = src.transform
         crs = src.crs
+        raster_shape = data.shape
+
+    time_data = None
+    if time_raster_path is not None:
+        with rasterio.open(time_raster_path) as src:
+            time_data = src.read(1).astype(np.int32)
+            if src.transform != transform or src.crs != crs or src.shape != raster_shape:
+                raise ValueError("time_raster_path must match the prediction raster grid, CRS, and shape")
 
     if data.sum() == 0:
         raise ValueError(
@@ -73,13 +129,27 @@ def raster_to_geojson(
         )
 
     # Vectorise connected foreground regions into polygons
-    polygons = [
-        shape(geom)
-        for geom, value in shapes(data, mask=data, transform=transform)
-        if value == 1
-    ]
+    polygons = []
+    time_steps = []
+    for geom, value in shapes(data, mask=data, transform=transform):
+        if value != 1:
+            continue
+        polygon = shape(geom)
+        polygons.append(polygon)
+        if time_data is None:
+            time_steps.append(None)
+        else:
+            time_steps.append(
+                _aggregate_polygon_time_step(
+                    polygon,
+                    time_data,
+                    transform=transform,
+                    time_strategy=time_strategy,
+                    time_labels=time_labels,
+                )
+            )
 
-    gdf = gpd.GeoDataFrame(geometry=polygons, crs=crs)
+    gdf = gpd.GeoDataFrame({"time_step": time_steps}, geometry=polygons, crs=crs)
     gdf = gdf.to_crs("EPSG:4326")
 
     # Filter by area: project to UTM for metric-accurate ha calculation
@@ -92,8 +162,6 @@ def raster_to_geojson(
             f"All polygons are smaller than min_area_ha={min_area_ha} ha. "
             "Lower the threshold or check your prediction raster."
         )
-
-    gdf["time_step"] = None
 
     geojson = json.loads(gdf.to_json())
 
