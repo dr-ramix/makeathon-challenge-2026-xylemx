@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: xylemx
+Version: 0.1.0
+Summary: Hackathon project for multimodal deforestation detection
+Requires-Python: >=3.10

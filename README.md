@@ -67,3 +67,48 @@ data/makeathon-challenge/
 ```
 
 ## Explore the Notebook for the Full Challenge Walkthrough
+
+## Docs
+
+- [Baseline Pipeline](./docs/baseline-pipeline.md)
+- [SLURM Jobs](./jobs/README.md)
+
+## Baseline Pipeline
+
+The repository now includes a lightweight, terminal-first baseline under `src/xylemx/` plus:
+
+```text
+scripts/preprocess.py
+scripts/train.py
+scripts/predict.py
+```
+
+Typical workflow:
+
+```bash
+./.venv/bin/pip install -e . --no-build-isolation
+
+./.venv/bin/python scripts/preprocess.py \
+  --data-root data/makeathon-challenge \
+  --output-dir output/preprocessing
+
+./.venv/bin/python scripts/train.py \
+  model=small_unet \
+  batch_size=8 \
+  patch_size=128 \
+  epochs=5 \
+  lr=1e-3 \
+  output_dir=output/train_runs/debug
+
+./.venv/bin/python scripts/predict.py \
+  checkpoint=output/train_runs/debug/best.pt \
+  split=val \
+  output_dir=output/predictions/debug
+```
+
+## Notes And Assumptions
+
+- The first baseline uses Sentinel-2 only and builds one early-year composite and one late-year composite per tile. It prefers `2020` and `2025`, and falls back to the earliest/latest available Sentinel-2 year when a tile is missing one of those endpoints.
+- Weak labels are decoded and reprojected onto the Sentinel-2 grid before consensus targets are built.
+- One training tile in the provided data (`18NWM_9_4`) is only 2 pixels wide in Sentinel-2. The dataset loader skips tiles smaller than the requested patch size instead of forcing invalid patches into training.
+- In this offline sandbox, editable install needed `--no-build-isolation` because `pip install -e .` attempted to resolve build dependencies from the network.
