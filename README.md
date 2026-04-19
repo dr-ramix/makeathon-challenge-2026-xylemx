@@ -47,13 +47,24 @@ and
 
 ![Deforestation in the Amazon from Sentinel-2](content/images/deforestation_amazon_s2.jpg)
 
+### Deforestation (NASA example)
+
+![Amazon deforestation (NASA)](content/images/amazon_deforestation_nasa.jpg)
+
 Image sources and license details: [Image Attribution](content/images/ATTRIBUTION.md)
 
 ## Why This Project Matters
 
-Deforestation monitoring is a high-impact real-world problem for climate, biodiversity, and supply-chain transparency. Regulations such as EUDR increase the need for systems that can detect forest-loss events reliably at scale, across regions with different weather, terrain, and sensor quality.
+Deforestation monitoring directly impacts climate mitigation, biodiversity protection, and supply-chain accountability. Regulations such as EUDR increase the need for scalable systems that can produce trustworthy deforestation evidence across many regions, seasons, and acquisition conditions.
 
-The core challenge is not only model accuracy. It is handling noisy, heterogeneous, and partially conflicting observations from space while still producing stable segmentation outputs.
+The hard part is data reliability. Earth observation data is often noisy, incomplete, and inconsistent:
+
+- optical scenes can be degraded or fully blocked by clouds and haze
+- rainy seasons reduce usable observations and increase temporal gaps
+- radar and optical sensors capture different physical signals and can disagree
+- weak-label sources can conflict, be uncertain, or miss events entirely
+
+This project focuses on building robust segmentation pipelines that still behave consistently under these imperfect real-world conditions, not only on maximizing a single benchmark score.
 
 ## Data From Space: Modalities And Label Sources
 
