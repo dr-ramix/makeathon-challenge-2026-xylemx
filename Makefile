@@ -24,4 +24,4 @@ install: .venv/bin/uv
 	# after installing source .venv/bin/activate in your shell
 
 download_data_from_s3:
-	.venv/bin/python3 -m download_data
+	.venv/bin/python3 scripts/download_data.py

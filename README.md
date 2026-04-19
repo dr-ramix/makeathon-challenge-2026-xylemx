@@ -1,21 +1,35 @@
 # Multimodal Deforestation Detection and Segmentation
 
-A computer vision and geospatial ML project for pixel-level deforestation detection from multimodal satellite data.
+![Deforestation event example](content/deforestation.png)
 
-This repository is maintained as a personal technical project by team **XylemX**. It was originally built during the **osapiens** Makeathon 2026 challenge and then expanded into a reproducible research-style pipeline.
+Deforestation signals are visible from space, but turning raw satellite streams into reliable pixel-level evidence is hard. Cloud cover, seasonal change, sensor differences, and noisy alert labels make this a high-uncertainty computer vision problem.
+
+This repository presents team **XylemX**'s systematic experimentation pipeline from **Makeathon 2026 (organized by TUM.AI)**, with the challenge defined by **osapiens**. The goal is to detect deforestation events at pixel level with robust geospatial ML workflows rather than one-off model runs.
+
+In this project, **multimodal** means combining complementary Earth-observation inputs:
+
+- Sentinel-2 optical multispectral time series
+- Sentinel-1 radar time series
+- AEF foundation-model embeddings
+
+These inputs are aligned to a shared grid and trained against fused weak supervision from RADD, GLAD-L, and GLAD-S2.
 
 ## Project Snapshot
 
 ![Professional overview panel 18NYH_2_1](content/images/professional_18NYH_overview_panel.jpg)
+![Professional temporal S2 timeline 18NYH_2_1](content/images/professional_18NYH_temporal_s2_timeline.jpg)
 
-This image is copied from:
+These images are copied from:
 `output/professional_visualizations/clearer_samples_test/18NYH_2_1/overview_panel.png`
+and
+`output/professional_visualizations/clearer_samples_test/18NYH_2_1/temporal_s2_timeline.png`
 
 ## At A Glance
 
 - Task: binary deforestation segmentation (and optional event-time prediction in temporal mode).
 - Inputs: Sentinel-2, Sentinel-1, AEF embeddings.
 - Supervision: weak-label fusion from RADD, GLAD-L, and GLAD-S2.
+- Method: systematic experiment loops across preprocessing, fusion strategy, model family, and training setup.
 - Output: georeferenced prediction rasters and submission-ready GeoJSON.
 
 ## Quick Navigation
@@ -32,10 +46,6 @@ This image is copied from:
 ### Deforestation (Sentinel-2 example)
 
 ![Deforestation in the Amazon from Sentinel-2](content/images/deforestation_amazon_s2.jpg)
-
-### Radar Context (Sentinel-1 mosaic)
-
-![Europe as seen by Copernicus Sentinel-1](content/images/sentinel1_europe.jpg)
 
 Image sources and license details: [Image Attribution](content/images/ATTRIBUTION.md)
 
@@ -311,10 +321,6 @@ To regenerate these diagrams:
 These samples were copied from:
 `output/professional_visualizations/clearer_samples_test/18NYH_2_1`
 
-#### Sentinel-2 temporal timeline
-
-![Professional temporal S2 timeline 18NYH_2_1](content/images/professional_18NYH_temporal_s2_timeline.jpg)
-
 #### Input preview
 
 ![Professional input preview 18NYH_2_1](content/images/professional_18NYH_input_preview.jpg)
@@ -338,7 +344,7 @@ python -m pip install -e .
 ### 2) Download data (Python, not Make)
 
 ```bash
-python download_data.py \
+python scripts/download_data.py \
   --bucket_name osapiens-terra-challenge \
   --folder_name makeathon-challenge \
   --local_dir ./data

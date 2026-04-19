@@ -22,7 +22,7 @@ It covers:
 3. Single-date summer-2025 pipeline (focused simplified variant).
 
 Core package: `src/xylemx/`  
-Primary automation entrypoints: `scripts/` plus root wrappers (`train.py`, `preprocess.py`, etc.).
+Primary automation entrypoints: `scripts/`.
 
 ---
 
@@ -65,12 +65,11 @@ flowchart LR
 - `README.md`: challenge + baseline overview.
 - `osapiens-challenge-full-description.md`: challenge brief.
 - `challenge.ipynb`: exploratory walkthrough.
-- `download_data.py`: S3 dataset download utility.
+- `scripts/download_data.py`: S3 dataset download utility.
 - `submission_utils.py`: raster-to-GeoJSON conversion.
 - `pyproject.toml`: package config (`xylemx`).
 - `requirements.txt`: pinned environment.
 - `Makefile`: venv install and data download helper.
-- Root wrappers: `preprocess.py`, `train.py`, `predict.py`, `train_temporal.py`, etc.
 
 ### 3.2 Source Package (`src/xylemx/`)
 
@@ -86,7 +85,7 @@ flowchart LR
 
 ### 3.3 Automation and Ops
 
-- `scripts/` (13 files): official CLI entrypoints.
+- `scripts/`: official CLI entrypoints.
 - `jobs/` (15 files): SLURM/local orchestration templates.
 - `tests/` (7 files): regression/unit tests for core mechanics.
 - `docs/`: technical documentation pages.
@@ -335,15 +334,16 @@ Outputs include mask rasters and optional time-bin rasters.
 
 ### 11.1 `scripts/` Entry Points
 
-- `preprocess.py`: baseline preprocessing
-- `train.py`: baseline training
-- `predict.py`: checkpoint inference/export
-- `make_submission.py`: prediction rasters -> GeoJSON
-- `preprocessing_leaderboard.py`, `train_leaderboard.py`
-- `preprocessing_temporal.py`, `train_temporal.py`
-- `preprocessing_temporal_hq.py`, `train_temporal_hq.py`
-- `preprocessing_single_2025.py`, `train_single_2025.py`
-- `run_all_models_gpu.sh` (legacy helper)
+- `scripts/download_data.py`: S3 dataset download utility
+- `scripts/preprocess.py`: baseline preprocessing
+- `scripts/train.py`: baseline training
+- `scripts/predict.py`: checkpoint inference/export
+- `scripts/make_submission.py`: prediction rasters -> GeoJSON
+- `scripts/preprocessing_leaderboard.py`, `scripts/train_leaderboard.py`
+- `scripts/preprocessing_temporal.py`, `scripts/train_temporal.py`
+- `scripts/preprocessing_temporal_hq.py`, `scripts/train_temporal_hq.py`
+- `scripts/preprocessing_single_2025.py`, `scripts/train_single_2025.py`
+- `scripts/run_all_models_gpu.sh` (legacy helper)
 
 ### 11.2 `jobs/` Templates
 

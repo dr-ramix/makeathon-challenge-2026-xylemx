@@ -484,7 +484,7 @@ Use `conservative` when:
 In command-line terms:
 
 ```bash
-python preprocess.py \
+python scripts/preprocess.py \
   --output-dir output/preprocessing/snapshot_pair \
   temporal_feature_mode=snapshot_pair \
   radd_positive_mode=permissive
@@ -493,7 +493,7 @@ python preprocess.py \
 or:
 
 ```bash
-python preprocess.py \
+python scripts/preprocess.py \
   --output-dir output/preprocessing/snapshot_pair \
   temporal_feature_mode=snapshot_pair \
   radd_positive_mode=conservative
