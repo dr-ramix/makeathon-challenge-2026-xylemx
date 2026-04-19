@@ -7,6 +7,7 @@ from .vgg import VGGUNet
 from .convnext import ConvNeXtUNet
 from .convnext_v2 import ConvNeXtV2UNet
 from .coatnet import CoAtNetUNet
+from .coatnext_tiny import CoAtNeXtTinyUNet
 
 __all__ = [
 	"SmallUNet",
@@ -15,6 +16,7 @@ __all__ = [
 	"ConvNeXtUNet",
 	"ConvNeXtV2UNet",
 	"CoAtNetUNet",
+	"CoAtNeXtTinyUNet",
 	"build_loss",
 	"build_model",
 ]

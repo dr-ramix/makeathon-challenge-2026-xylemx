@@ -3,3 +3,8 @@ Name: xylemx
 Version: 0.1.0
 Summary: Hackathon project for multimodal deforestation detection
 Requires-Python: >=3.10
+Requires-Dist: matplotlib>=3.9
+Requires-Dist: numpy>=1.26
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: rasterio>=1.4
+Requires-Dist: scikit-learn>=1.5

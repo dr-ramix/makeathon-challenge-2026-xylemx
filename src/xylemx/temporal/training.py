@@ -21,8 +21,8 @@ from xylemx.temporal.config import TemporalTrainConfig
 from xylemx.temporal.dataset import TemporalPatchDataset
 from xylemx.temporal.inference import load_temporal_tile, predict_temporal_tile
 from xylemx.temporal.losses import TemporalMultiTaskLoss
-from xylemx.temporal.model import DualHeadUNet
-from xylemx.temporal.io import get_temporal_ignore_mask_path, get_temporal_mask_target_path
+from xylemx.temporal.model import DualHeadUNet, DualHeadUNetPlus
+from xylemx.temporal.io import get_temporal_cond_path, get_temporal_ignore_mask_path, get_temporal_mask_target_path
 from xylemx.training.metrics import add_confusion_counts, compute_confusion_counts, empty_confusion_counts, metrics_from_confusion_counts
 
 LOGGER = logging.getLogger(__name__)
@@ -127,6 +127,7 @@ def _train_or_eval_epoch(
 
     for batch in dataloader:
         inputs = batch["inputs"].to(device)
+        cond = batch["cond"].to(device)
         mask_target = batch["mask_target"].to(device)
         time_target = batch["time_target"].to(device)
         ignore_mask = batch["ignore_mask"].to(device)
@@ -135,7 +136,7 @@ def _train_or_eval_epoch(
         if training:
             optimizer.zero_grad(set_to_none=True)
         with _amp_context(device, enabled=config.mixed_precision and device.type == "cuda"):
-            outputs = model(inputs)
+            outputs = model(inputs, cond)
             batch_loss = loss_fn(outputs, mask_target, time_target, ignore_mask=ignore_mask, weight_map=weight_map)
         loss = batch_loss["loss"]
         if training:
@@ -173,21 +174,43 @@ def _train_or_eval_epoch(
     return summary
 
 
-def _build_model(config: TemporalTrainConfig, preprocessing_dir: Path) -> tuple[DualHeadUNet, dict[str, object]]:
+def _build_model(config: TemporalTrainConfig, preprocessing_dir: Path) -> tuple[torch.nn.Module, dict[str, object]]:
     temporal_spec = load_json(preprocessing_dir / "temporal_spec.json")
     time_bins = load_json(preprocessing_dir / "time_bins.json")
     sample_tile = load_json(preprocessing_dir / "train_tiles.json")[0]
     sample_inputs = np.load(preprocessing_dir / "inputs" / "train" / f"{sample_tile}.npy").astype(np.float32)
-    model = DualHeadUNet(
-        in_channels=int(sample_inputs.shape[1] if sample_inputs.ndim == 4 else sample_inputs.shape[0]),
-        num_time_classes=int(time_bins["num_classes"]),
-        input_is_sequence=sample_inputs.ndim == 4,
-        stem_channels=config.stem_channels,
-        base_channels=config.base_channels,
-        dropout=config.dropout,
-        temporal_kernel_size=config.temporal_kernel_size,
-    )
-    return model, {"temporal_spec": temporal_spec, "time_bins": time_bins, "sample_shape": list(sample_inputs.shape)}
+    if sample_inputs.ndim == 4:
+        sample_inputs = sample_inputs.reshape(-1, sample_inputs.shape[-2], sample_inputs.shape[-1])
+    sample_cond_path = get_temporal_cond_path(preprocessing_dir, "train", sample_tile)
+    sample_cond = np.load(sample_cond_path).astype(np.float32).reshape(-1) if sample_cond_path.exists() else np.zeros((0,), dtype=np.float32)
+    model_name = str(config.model).lower().strip()
+    shared_kwargs = {
+        "in_channels": int(sample_inputs.shape[0]),
+        "num_time_classes": int(time_bins["num_classes"]),
+        "cond_dim": int(sample_cond.shape[0]),
+        "input_is_sequence": False,
+        "stem_channels": config.stem_channels,
+        "base_channels": config.base_channels,
+        "dropout": config.dropout,
+        "temporal_kernel_size": config.temporal_kernel_size,
+        "film_hidden_dim": config.film_hidden_dim,
+    }
+    if model_name in {"film_temporal_unet", "temporal_unet"}:
+        model = DualHeadUNet(**shared_kwargs)
+    elif model_name in {"film_temporal_unet_plus", "film_temporal_plus", "temporal_unet_plus"}:
+        model = DualHeadUNetPlus(**shared_kwargs)
+    else:
+        raise ValueError(
+            f"Unsupported temporal model '{config.model}'. "
+            "Supported: film_temporal_unet, film_temporal_unet_plus"
+        )
+    return model, {
+        "model_name": model_name,
+        "temporal_spec": temporal_spec,
+        "time_bins": time_bins,
+        "sample_shape": list(sample_inputs.shape),
+        "cond_dim": int(sample_cond.shape[0]),
+    }
 
 
 def _export_predictions(
@@ -207,7 +230,7 @@ def _export_predictions(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for tile_id in tile_ids:
-        inputs, valid_mask = load_temporal_tile(
+        inputs, cond, valid_mask = load_temporal_tile(
             preprocessing_dir,
             split=cache_split,
             tile_id=tile_id,
@@ -216,6 +239,7 @@ def _export_predictions(
         probability, time_prediction = predict_temporal_tile(
             model,
             inputs,
+            cond,
             valid_mask,
             device=device,
             patch_size=config.patch_size,

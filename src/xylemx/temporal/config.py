@@ -21,9 +21,10 @@ class TemporalPreprocessingConfig:
 
     time_start: str = "2020-01"
     time_end: str = "2025-12"
+    time_step_month_stride: int = 1
     time_bin_mode: str = "year"
     time_merge_strategy: str = "highest_confidence"
-    representation: str = "sequence"
+    representation: str = "early_middle_late_deltas"
     flatten_time: bool = False
     summary_window_count: int = 3
 
@@ -32,8 +33,16 @@ class TemporalPreprocessingConfig:
     include_aef: bool = True
     add_s2_indices: bool = True
     add_validity_channels: bool = True
+    add_missing_channel: bool = True
     aef_pca_dim: int = 8
     pca_num_samples_per_raster: int = 2000
+    include_condition_vector: bool = True
+    cond_month_sincos: bool = True
+    cond_include_geo: bool = True
+    cond_include_quality: bool = True
+    cond_include_aef_summary: bool = True
+    cond_aef_summary_dim: int = 8
+    cond_min_std: float = 1e-3
 
     patch_size: int = 128
     patch_stride: int = 128
@@ -68,7 +77,7 @@ class TemporalTrainConfig:
     num_workers: int = 4
     device: str = "auto"
 
-    model: str = "temporal_unet"
+    model: str = "film_temporal_unet"
     patch_size: int = 128
     train_stride: int = 128
     eval_stride: int = 128
@@ -85,6 +94,7 @@ class TemporalTrainConfig:
     base_channels: int = 32
     dropout: float = 0.1
     temporal_kernel_size: int = 3
+    film_hidden_dim: int = 128
 
     mask_loss: str = "bce_dice"
     bce_weight: float = 0.7
@@ -124,8 +134,11 @@ def _unwrap_optional(field_type: Any) -> Any:
     origin = get_origin(field_type)
     if origin is None:
         return field_type
-    args = [arg for arg in get_args(field_type) if arg is not type(None)]
-    return args[0] if len(args) == 1 else field_type
+    args = get_args(field_type)
+    non_none_args = [arg for arg in args if arg is not type(None)]
+    if len(non_none_args) == 1 and len(non_none_args) != len(args):
+        return non_none_args[0]
+    return field_type
 
 
 def _coerce_value(field_type: Any, value: Any) -> Any:
@@ -146,7 +159,16 @@ def _coerce_value(field_type: Any, value: Any) -> Any:
     if field_type is float:
         return float(value)
     if field_type is str:
-        return str(value)
+        text = str(value).strip()
+        for _ in range(2):
+            if len(text) >= 4 and text.startswith('\\"') and text.endswith('\\"'):
+                text = text[2:-2].strip()
+                continue
+            if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+                text = text[1:-1].strip()
+                continue
+            break
+        return text
     if field_type is Path:
         return Path(value)
     if origin is list:

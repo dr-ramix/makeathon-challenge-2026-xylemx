@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from contextlib import nullcontext
+from pathlib import Path
 
 import numpy as np
 import torch
 
 from xylemx.data.io import load_json
 from xylemx.data.tiling import generate_patch_records
-from xylemx.temporal.dataset import TemporalNormalizer
-from xylemx.temporal.io import get_temporal_input_path, get_temporal_valid_mask_path
+from xylemx.temporal.dataset import ConditionNormalizer, TemporalNormalizer
+from xylemx.temporal.io import get_temporal_cond_path, get_temporal_input_path, get_temporal_valid_mask_path
 
 
 def load_temporal_tile(
@@ -20,24 +20,49 @@ def load_temporal_tile(
     split: str,
     tile_id: str,
     clip: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Load one cached temporal tensor and apply train-fitted normalization."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load one cached temporal tensor + condition vector with train-fitted normalization."""
 
     preprocessing_dir = Path(preprocessing_dir)
-    stats = load_json(preprocessing_dir / "normalization_stats.json")
-    normalizer = TemporalNormalizer(
-        mean=np.asarray(stats["mean"], dtype=np.float32),
-        std=np.asarray(stats["std"], dtype=np.float32),
+
+    feature_stats = load_json(preprocessing_dir / "normalization_stats.json")
+    feature_normalizer = TemporalNormalizer(
+        mean=np.asarray(feature_stats["mean"], dtype=np.float32),
+        std=np.asarray(feature_stats["std"], dtype=np.float32),
         clip=clip,
     )
+
+    condition_stats_path = preprocessing_dir / "condition_stats.json"
+    if condition_stats_path.exists():
+        condition_stats = load_json(condition_stats_path)
+        cond_normalizer = ConditionNormalizer(
+            mean=np.asarray(condition_stats.get("mean", []), dtype=np.float32),
+            std=np.asarray(condition_stats.get("std", []), dtype=np.float32),
+        )
+    else:
+        cond_normalizer = ConditionNormalizer(mean=np.zeros((0,), dtype=np.float32), std=np.ones((0,), dtype=np.float32))
+
     inputs = np.load(get_temporal_input_path(preprocessing_dir, split, tile_id)).astype(np.float32)
     valid_mask = np.load(get_temporal_valid_mask_path(preprocessing_dir, split, tile_id)).astype(bool)
-    return normalizer(inputs), valid_mask
+
+    cond_path = get_temporal_cond_path(preprocessing_dir, split, tile_id)
+    if cond_path.exists():
+        cond = np.load(cond_path).astype(np.float32).reshape(-1)
+    else:
+        cond = cond_normalizer.mean.copy()
+
+    normalized_inputs = feature_normalizer(inputs)
+    if normalized_inputs.ndim == 4:
+        normalized_inputs = normalized_inputs.reshape(-1, normalized_inputs.shape[-2], normalized_inputs.shape[-1])
+
+    normalized_cond = cond_normalizer(cond)
+    return normalized_inputs, normalized_cond, valid_mask
 
 
 def predict_temporal_tile(
     model: torch.nn.Module,
     inputs: np.ndarray,
+    cond: np.ndarray,
     valid_mask: np.ndarray,
     *,
     device: torch.device,
@@ -63,29 +88,36 @@ def predict_temporal_tile(
     time_logit_sum: np.ndarray | None = None
     count_sum = np.zeros(valid_mask.shape, dtype=np.float32)
 
+    cond_tensor: torch.Tensor | None = None
+    if cond.size > 0:
+        cond_tensor = torch.from_numpy(cond.astype(np.float32)).to(device)
+
     autocast_enabled = mixed_precision and device.type == "cuda"
     with torch.no_grad():
         for start in range(0, len(patches), batch_size):
             batch_records = patches[start : start + batch_size]
             batch_inputs = []
             for patch in batch_records:
-                if inputs.ndim == 4:
-                    patch_array = inputs[:, :, patch.y : patch.y + patch.height, patch.x : patch.x + patch.width]
-                    padded = np.zeros((inputs.shape[0], inputs.shape[1], patch_size, patch_size), dtype=np.float32)
-                    padded[:, :, : patch.height, : patch.width] = patch_array
-                else:
-                    patch_array = inputs[:, patch.y : patch.y + patch.height, patch.x : patch.x + patch.width]
-                    padded = np.zeros((inputs.shape[0], patch_size, patch_size), dtype=np.float32)
-                    padded[:, : patch.height, : patch.width] = patch_array
+                patch_array = inputs[:, patch.y : patch.y + patch.height, patch.x : patch.x + patch.width]
+                padded = np.zeros((inputs.shape[0], patch_size, patch_size), dtype=np.float32)
+                padded[:, : patch.height, : patch.width] = patch_array
                 batch_inputs.append(padded)
+
             batch = torch.from_numpy(np.stack(batch_inputs, axis=0)).float().to(device)
+            if cond_tensor is not None:
+                batch_cond = cond_tensor[None, :].repeat(batch.shape[0], 1)
+            else:
+                batch_cond = None
+
             autocast = torch.amp.autocast("cuda", enabled=True) if autocast_enabled else nullcontext()
             with autocast:
-                outputs = model(batch)
+                outputs = model(batch, batch_cond)
+
             mask_prob = torch.sigmoid(outputs["mask_logits"]).cpu().numpy()[:, 0]
             time_logits = outputs["time_logits"].cpu().numpy()
             if time_logit_sum is None:
                 time_logit_sum = np.zeros((time_logits.shape[1], *valid_mask.shape), dtype=np.float32)
+
             for patch, patch_prob, patch_time_logits in zip(batch_records, mask_prob, time_logits, strict=True):
                 y_slice = slice(patch.y, patch.y + patch.height)
                 x_slice = slice(patch.x, patch.x + patch.width)

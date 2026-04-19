@@ -181,8 +181,11 @@ def _unwrap_optional(field_type: Any) -> Any:
     origin = get_origin(field_type)
     if origin is None:
         return field_type
-    args = [arg for arg in get_args(field_type) if arg is not type(None)]
-    return args[0] if len(args) == 1 else field_type
+    args = get_args(field_type)
+    non_none_args = [arg for arg in args if arg is not type(None)]
+    if len(non_none_args) == 1 and len(non_none_args) != len(args):
+        return non_none_args[0]
+    return field_type
 
 
 def _coerce_value(field_type: Any, value: Any) -> Any:
@@ -203,7 +206,16 @@ def _coerce_value(field_type: Any, value: Any) -> Any:
     if field_type is float:
         return float(value)
     if field_type is str:
-        return str(value)
+        text = str(value).strip()
+        for _ in range(2):
+            if len(text) >= 4 and text.startswith('\\"') and text.endswith('\\"'):
+                text = text[2:-2].strip()
+                continue
+            if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+                text = text[1:-1].strip()
+                continue
+            break
+        return text
     if field_type is Path:
         return Path(value)
     if origin is list:

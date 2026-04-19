@@ -14,6 +14,7 @@ from xylemx.data.io import load_json
 from xylemx.data.tiling import PatchRecord, generate_patch_records
 from xylemx.temporal.config import TemporalTrainConfig
 from xylemx.temporal.io import (
+    get_temporal_cond_path,
     get_temporal_ignore_mask_path,
     get_temporal_input_path,
     get_temporal_mask_target_path,
@@ -40,6 +41,34 @@ class TemporalNormalizer:
         return normalized.reshape(array.shape).astype(np.float32)
 
 
+@dataclass(slots=True)
+class ConditionNormalizer:
+    """Z-score normalization for per-sample conditioning vectors."""
+
+    mean: np.ndarray
+    std: np.ndarray
+
+    @property
+    def feature_dim(self) -> int:
+        return int(self.mean.shape[0])
+
+    def __call__(self, vector: np.ndarray) -> np.ndarray:
+        vector = np.asarray(vector, dtype=np.float32).reshape(-1)
+        if self.feature_dim == 0:
+            return np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+        if vector.shape[0] == 0:
+            vector = np.zeros((self.feature_dim,), dtype=np.float32)
+        elif vector.shape[0] != self.feature_dim:
+            aligned = np.zeros((self.feature_dim,), dtype=np.float32)
+            overlap = min(vector.shape[0], self.feature_dim)
+            aligned[:overlap] = vector[:overlap]
+            vector = aligned
+
+        normalized = (vector - self.mean) / self.std
+        return np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
 def _load_normalizer(preprocessing_dir: Path, clip: float) -> TemporalNormalizer:
     stats = load_json(preprocessing_dir / "normalization_stats.json")
     return TemporalNormalizer(
@@ -47,6 +76,18 @@ def _load_normalizer(preprocessing_dir: Path, clip: float) -> TemporalNormalizer
         std=np.asarray(stats["std"], dtype=np.float32),
         clip=clip,
     )
+
+
+def _load_condition_normalizer(preprocessing_dir: Path) -> ConditionNormalizer:
+    stats_path = preprocessing_dir / "condition_stats.json"
+    if not stats_path.exists():
+        return ConditionNormalizer(mean=np.zeros((0,), dtype=np.float32), std=np.ones((0,), dtype=np.float32))
+    stats = load_json(stats_path)
+    mean = np.asarray(stats.get("mean", []), dtype=np.float32)
+    std = np.asarray(stats.get("std", []), dtype=np.float32)
+    if mean.size == 0:
+        return ConditionNormalizer(mean=np.zeros((0,), dtype=np.float32), std=np.ones((0,), dtype=np.float32))
+    return ConditionNormalizer(mean=mean, std=std)
 
 
 def _spatial_augment(
@@ -119,8 +160,10 @@ class TemporalPatchDataset(Dataset):
         self.training = training
         self.rng = np.random.default_rng(config.seed if not training else config.seed + 17)
         self.normalizer = _load_normalizer(self.preprocessing_dir, config.normalized_feature_clip)
+        self.cond_normalizer = _load_condition_normalizer(self.preprocessing_dir)
 
         self._input_cache: dict[str, np.ndarray] = {}
+        self._cond_cache: dict[str, np.ndarray] = {}
         self._valid_cache: dict[str, np.ndarray] = {}
         self._mask_cache: dict[str, np.ndarray] = {}
         self._time_cache: dict[str, np.ndarray] = {}
@@ -161,9 +204,16 @@ class TemporalPatchDataset(Dataset):
     def __len__(self) -> int:
         return len(self.patch_records)
 
-    def _load_tile(self, tile_id: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _load_tile(self, tile_id: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if tile_id not in self._input_cache:
             self._input_cache[tile_id] = np.load(get_temporal_input_path(self.preprocessing_dir, self.split, tile_id)).astype(np.float32)
+
+            cond_path = get_temporal_cond_path(self.preprocessing_dir, self.split, tile_id)
+            if cond_path.exists():
+                self._cond_cache[tile_id] = np.load(cond_path).astype(np.float32).reshape(-1)
+            else:
+                self._cond_cache[tile_id] = self.cond_normalizer.mean.copy()
+
             self._valid_cache[tile_id] = np.load(get_temporal_valid_mask_path(self.preprocessing_dir, self.split, tile_id)).astype(bool)
             self._mask_cache[tile_id] = np.load(get_temporal_mask_target_path(self.preprocessing_dir, tile_id)).astype(np.float32)
             self._time_cache[tile_id] = np.load(get_temporal_time_target_path(self.preprocessing_dir, tile_id)).astype(np.int64)
@@ -171,6 +221,7 @@ class TemporalPatchDataset(Dataset):
             self._weight_cache[tile_id] = np.load(get_temporal_weight_map_path(self.preprocessing_dir, tile_id)).astype(np.float32)
         return (
             self._input_cache[tile_id],
+            self._cond_cache[tile_id],
             self._valid_cache[tile_id],
             self._mask_cache[tile_id],
             self._time_cache[tile_id],
@@ -180,7 +231,7 @@ class TemporalPatchDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor | str | int]:
         patch = self.patch_records[index]
-        inputs, valid_mask, mask_target, time_target, ignore_mask, weight_map = self._load_tile(patch.tile_id)
+        inputs, cond_vector, valid_mask, mask_target, time_target, ignore_mask, weight_map = self._load_tile(patch.tile_id)
         y_slice = slice(patch.y, patch.y + self.patch_size)
         x_slice = slice(patch.x, patch.x + self.patch_size)
 
@@ -208,9 +259,14 @@ class TemporalPatchDataset(Dataset):
             )
 
         input_patch = self.normalizer(input_patch)
+        if input_patch.ndim == 4:
+            input_patch = input_patch.reshape(-1, input_patch.shape[-2], input_patch.shape[-1])
+
+        cond_patch = self.cond_normalizer(cond_vector)
 
         return {
             "inputs": torch.from_numpy(input_patch).float(),
+            "cond": torch.from_numpy(cond_patch).float(),
             "mask_target": torch.from_numpy(mask_patch[None, ...]).float(),
             "time_target": torch.from_numpy(time_patch).long(),
             "ignore_mask": torch.from_numpy(ignore_patch[None, ...]).bool(),

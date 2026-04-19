@@ -110,6 +110,7 @@ Typical workflow:
 Supported model names now include:
 
 - `small_unet`
+- `coatnext_tiny_unet` (tiny C-C-C-T hybrid encoder with U-Net decoder)
 - encoder-decoder variants use suffixes `*_unet`, `*_fpn`, `*_unetpp`, `*_upernet`, `*_deeplabv3plus`
 - CBAM attention variants use suffixes `*_unet_cbam`, `*_fpn_cbam`, `*_unetpp_cbam`, `*_upernet_cbam`, and `*_deeplabv3plus_cbam`
 - backbones currently include:
@@ -137,7 +138,37 @@ Examples:
 - `convnextv2_tiny_deeplabv3plus`
 - `coatnet0_fpn`
 - `coatnet0_upernet`
+- `coatnext_tiny_unet`
 - `vgg16_unetpp`
+
+## Leaderboard-Oriented Workflow (Opt-In)
+
+To keep baseline behavior unchanged while running a stronger setup for generalization, use:
+
+```bash
+./.venv/bin/python preprocessing_leaderboard.py \
+  --data-root data/makeathon-challenge \
+  --output-dir output/preprocessing_leaderboard
+```
+
+Then run model search + final training:
+
+```bash
+./.venv/bin/python train_leaderboard.py \
+  --preprocessing-dir output/preprocessing_leaderboard \
+  --selection-metric iou \
+  --calibrate-threshold \
+  --search-epochs 12 \
+  --final-epochs 50
+```
+
+Useful options:
+
+- `--model-candidates resnet34_unetpp,resnet50_fpn,convnext_tiny_fpn`
+- `--calibrate-threshold` to select a validation-optimized threshold for Union IoU
+- `--skip-search` to train only the first candidate
+- `--search-only` to run only model ranking
+- Any `key=value` overrides from `ExperimentConfig` are also supported (for example `epochs=60`, `batch_size=6`)
 
 ## Notes And Assumptions
 

@@ -593,7 +593,7 @@ MODEL_HEADS = {
 def supported_model_names() -> list[str]:
     """Return the sorted list of supported model names."""
 
-    names = ["small_unet", "unet"]
+    names = ["small_unet", "unet", "coatnext_tiny_unet"]
     for alias in ENCODER_ALIASES:
         for suffix in MODEL_HEADS:
             names.append(f"{alias}{suffix}")
@@ -613,6 +613,14 @@ def build_model(
     normalized = name.lower()
     if normalized in {"small_unet", "unet"}:
         return SmallUNet(in_channels=in_channels, dropout=dropout)
+    if normalized in {"coatnext_tiny_unet", "coatnext_unet"}:
+        from xylemx.models.coatnext_tiny import CoAtNeXtTinyUNet
+
+        return CoAtNeXtTinyUNet(
+            in_channels=in_channels,
+            dropout=dropout,
+            drop_path_rate=stochastic_depth,
+        )
     for suffix, head_cls in MODEL_HEADS.items():
         if normalized.endswith(suffix):
             alias = normalized[: -len(suffix)]

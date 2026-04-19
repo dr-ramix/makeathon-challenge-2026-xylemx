@@ -38,6 +38,7 @@ class ModelRegistryTests(unittest.TestCase):
             "convnext_small_upernet",
             "convnext_tiny_deeplabv3plus",
             "convnext_tiny_deeplabv3plus_cbam",
+            "coatnext_tiny_unet",
             "convnextv2_atto_unet",
             "convnextv2_femto_unet",
             "convnextv2_pico_unet",
@@ -73,6 +74,7 @@ class ModelRegistryTests(unittest.TestCase):
             "resnet34_unet_cbam",
             "convnext_tiny_deeplabv3plus",
             "convnext_tiny_deeplabv3plus_cbam",
+            "coatnext_tiny_unet",
         ]
         for model_name in model_names:
             with self.subTest(model=model_name):
