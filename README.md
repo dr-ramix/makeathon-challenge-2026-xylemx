@@ -16,10 +16,6 @@ This repository is maintained as a personal technical project by team **XylemX**
 
 ![Europe as seen by Copernicus Sentinel-1](content/images/sentinel1_europe.jpg)
 
-### Vegetation Signal Example (NDVI)
-
-![NDVI map example](content/images/ndvi_map.jpg)
-
 Image sources and license details: [Image Attribution](content/images/ATTRIBUTION.md)
 
 ## Why This Project Matters
@@ -180,6 +176,41 @@ From `src/xylemx/models/`:
   - `convnext_tiny_upernet`
   - `convnextv2_tiny_unetpp`
 
+#### Snapshot model naming convention
+
+Most snapshot models follow:
+
+- `<encoder_alias><head_suffix>`
+
+Where:
+
+- `encoder_alias` is one of: `resnet18`, `resnet34`, `resnet50`, `resnet101`, `efficientnet_b0`, `convnext_tiny`, `convnext_small`, `convnext_base`, `convnext_large`, `convnextv2_atto`, `convnextv2_femto`, `convnextv2_pico`, `convnextv2_nano`, `convnextv2_tiny`, `convnextv2_small`, `convnextv2_base`, `coatnet0`, `coatnet1`, `coatnet2`, `coatnet3`, `vgg11`, `vgg13`, `vgg16`, `vgg19`
+- `head_suffix` is one of:
+  - `_unet`, `_unet_cbam`
+  - `_fpn`, `_fpn_cbam`
+  - `_unetpp`, `_unetpp_cbam`
+  - `_upernet`, `_upernet_cbam`
+  - `_deeplabv3plus`, `_deeplabv3plus_cbam`
+
+Native aliases (not timm-backed naming pattern):
+
+- `small_unet` (alias: `unet`)
+- `coatnext_tiny_unet` (alias: `coatnext_unet`)
+
+#### Snapshot architecture behavior
+
+- All snapshot models produce a **single-channel logit map** (`1 x H x W`) for binary deforestation segmentation.
+- Decoder outputs are upsampled back to input spatial size.
+- `_cbam` variants add channel + spatial attention blocks (CBAM) inside decoder/conv blocks.
+- Timm-backed models can optionally use pretrained encoders (`encoder_pretrained=true`) and stochastic depth (`stochastic_depth>0`).
+
+#### Practical model-selection guidance
+
+- Start with `resnet18_unet` for fast baseline iteration.
+- Use `resnet34_unetpp` or `convnext_tiny_upernet` when you want stronger boundary quality and can afford more compute.
+- Try `_cbam` variants when labels are noisy or classes are subtle; they can improve focus at a moderate compute cost.
+- Prefer `coatnext_tiny_unet` for a custom non-timm architecture with transformer-style context at the deepest stage.
+
 ### 2) Temporal Multitask Models
 
 From `src/xylemx/temporal/model.py`:
@@ -191,6 +222,34 @@ Both output:
 
 - binary deforestation mask logits
 - event-time logits (time-bin classification)
+
+#### Temporal model details
+
+- Both temporal models are **FiLM-conditioned U-Nets**:
+  - Conditioning vector (`x_cond`) modulates feature maps via learned per-channel affine transforms.
+  - Input can be flattened time-stacks or already-concatenated channels.
+- `film_temporal_unet`:
+  - Compact dual-head architecture with FiLM conv blocks.
+  - Good default for limited GPU memory or faster experimentation.
+- `film_temporal_unet_plus`:
+  - Higher-capacity variant with residual blocks, squeeze-excitation attention, and ASPP-style bottleneck context.
+  - Better suited for harder temporal disambiguation and finer event-time separation.
+
+#### Temporal outputs and supervision
+
+- `mask_logits`: binary segmentation head.
+- `time_logits`: multi-class head where classes come from preprocessing-generated `time_bins.json`.
+- Training uses multitask loss with configurable weighting (`lambda_time`, `time_loss_weight`) to balance mask vs. time prediction.
+
+#### Core model-related training knobs
+
+Snapshot config (`ExperimentConfig`):
+
+- `model`, `dropout`, `stochastic_depth`, `encoder_pretrained`
+
+Temporal config (`TemporalTrainConfig`):
+
+- `model`, `stem_channels`, `base_channels`, `dropout`, `film_hidden_dim`, `temporal_kernel_size`
 
 ### Model Architecture Diagrams
 
@@ -211,6 +270,20 @@ To regenerate these diagrams:
 ```bash
 .venv/bin/python scripts/generate_model_architecture_diagrams.py
 ```
+
+### Qualitative Example (CoAtNeXt Tiny, Val Tile `48PXC_7_7`)
+
+#### Full panel
+
+![CoAtNeXt validation panel](content/images/model_output_coatnext_48PXC_panel.jpg)
+
+#### Prediction overlay
+
+![CoAtNeXt prediction overlay](content/images/model_output_coatnext_48PXC_pred_overlay.jpg)
+
+#### Input preview
+
+![CoAtNeXt input preview](content/images/model_output_coatnext_48PXC_preview.jpg)
 
 ## Getting Started
 

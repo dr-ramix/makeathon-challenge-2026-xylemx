@@ -51,3 +51,15 @@ Downloaded on 2026-04-19 for README usage.
 
 - File-specific terms on Wikimedia Commons pages apply.
 - For Copernicus Sentinel imagery, follow attribution and usage conditions listed on the source page.
+
+## Local project-generated visuals
+
+These files are generated from this repository's own training runs or scripts:
+
+- `model_architecture_snapshot.png`
+- `model_architecture_temporal.png`
+- `model_architecture_overview.png`
+- `model_training_learning_curves.png`
+- `model_output_coatnext_48PXC_panel.jpg`
+- `model_output_coatnext_48PXC_pred_overlay.jpg`
+- `model_output_coatnext_48PXC_preview.jpg`
