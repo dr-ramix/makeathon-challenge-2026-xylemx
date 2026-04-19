@@ -1,293 +1,296 @@
-# XylemX - osapiens Makeathon 2026
-
-## Deforestation Detection from Space
+# Multimodal Deforestation Detection and Segmentation
 
 ![Deforestation event example](content/deforestation.png)
 
-This repository contains team **xylemx**'s solution for the osapiens Makeathon 2026 challenge.
-We build geospatial ML pipelines that detect deforestation events from multimodal satellite data (Sentinel-2, Sentinel-1, AEF embeddings) with weak supervision.
+A computer vision and geospatial ML project for pixel-level deforestation detection from multimodal satellite data.
 
-## Core Idea: Systematic Experimentation
+This repository is maintained as a personal technical project by team **XylemX**. It was originally built during the **osapiens** Makeathon 2026 challenge and then expanded into a reproducible research-style pipeline.
 
-The project idea was to **systematically experiment with different ideas**, not just train one model once.
+## Visual Gallery
 
-Our process is structured as repeatable experiment loops:
+### Deforestation (Sentinel-2 example)
 
-1. Define one hypothesis (feature representation, label fusion rule, model family, or training setting).
-2. Run a consistent preprocessing + training + evaluation pipeline.
-3. Compare runs using the same metrics and artifacts.
-4. Keep what generalizes, drop what does not.
+![Deforestation in the Amazon from Sentinel-2](content/images/deforestation_amazon_s2.jpg)
 
-Main experimentation axes:
+### Radar Context (Sentinel-1 mosaic)
 
-- Data representation: `snapshot_pair`, `snapshot_quad`, temporal windows, single-year snapshots.
-- Supervision strategy: weak-label fusion modes (`consensus_2of3`, `union`, `soft_vote`, etc.).
-- Architecture choice: U-Net/FPN/UNet++/UPerNet/DeepLabV3+ with multiple backbones.
-- Training recipe: augmentations, threshold calibration, and leaderboard-oriented model selection.
+![Europe as seen by Copernicus Sentinel-1](content/images/sentinel1_europe.jpg)
 
-## How The Project Works
+### Vegetation Signal Example (NDVI)
 
-At a high level, every pipeline follows the same shape:
+![NDVI map example](content/images/ndvi_map.jpg)
 
-1. Read raw challenge rasters and weak labels.
-2. Reproject everything to a shared Sentinel-2 grid.
-3. Decode + fuse weak labels into training targets, ignore masks, and weight maps.
-4. Build feature tensors and normalization stats.
-5. Train segmentation (or temporal multitask) models.
-6. Run sliding-window inference on full tiles.
-7. Export prediction rasters and convert them to submission-ready GeoJSON.
+Image sources and license details: [Image Attribution](content/images/ATTRIBUTION.md)
 
-## Quick Start
+## Why This Project Matters
 
-### 1) Install
+Deforestation monitoring is a high-impact real-world problem for climate, biodiversity, and supply-chain transparency. Regulations such as EUDR increase the need for systems that can detect forest-loss events reliably at scale, across regions with different weather, terrain, and sensor quality.
 
-```bash
-make install
-```
+The core challenge is not only model accuracy. It is handling noisy, heterogeneous, and partially conflicting observations from space while still producing stable segmentation outputs.
 
-### 2) Download dataset
+## Data From Space: Modalities And Label Sources
 
-```bash
-make download_data_from_s3
-```
+All model inputs come from satellite or satellite-derived products:
 
-Expected root after download:
+- **Sentinel-2 (optical, multispectral)** time series (`12` spectral bands per scene).
+- **Sentinel-1 (radar, RTC)** time series, robust to cloud cover and illumination changes.
+- **AEF embeddings** (foundation-model-style per-pixel features, provided as yearly rasters).
+
+Training supervision is weakly labeled and fused from three alert systems:
+
+- **RADD**
+- **GLAD-L**
+- **GLAD-S2**
+
+Data layout expected by the pipeline:
 
 ```text
 data/makeathon-challenge/
+├── sentinel-1/
+├── sentinel-2/
+├── aef-embeddings/
+├── labels/train/
+│   ├── gladl/
+│   ├── glads2/
+│   └── radd/
+└── metadata/
 ```
 
-### 3) Run baseline pipeline
+### Data Semantics Used In This Repository
 
-```bash
-# preprocessing
-./.venv/bin/python scripts/preprocess.py \
-  --data-root data/makeathon-challenge \
-  --output-dir output/preprocessing
+#### Sentinel-2 (optical) bands used in features
 
-# training
-./.venv/bin/python scripts/train.py \
-  model=resnet18_unet \
-  epochs=40 \
-  batch_size=4 \
-  output_root=output/training_runs
+The preprocessing code uses these 12 bands (`src/xylemx/preprocessing/features.py`):  
+`B01`, `B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B08`, `B8A`, `B09`, `B11`, `B12`.
 
-# inference on validation split
-./.venv/bin/python scripts/predict.py \
-  checkpoint=output/training_runs/<run_name>/best.pt \
-  split=val \
-  output_dir=output/predictions/<run_name>
-```
+`B10` (cirrus) is not used in the current feature stack.
 
-## Project Structure
+| Band | Typical name | Native GSD | Why it helps for deforestation monitoring |
+|---|---|---:|---|
+| B01 | Coastal aerosol | 60 m | atmospheric effects and haze-sensitive observations |
+| B02 | Blue | 10 m | water/haze separation and visible-spectrum context |
+| B03 | Green | 10 m | vegetation vigor and canopy reflectance context |
+| B04 | Red | 10 m | chlorophyll absorption, key for vegetation indices |
+| B05 | Red-edge 1 | 20 m | canopy stress and vegetation structure sensitivity |
+| B06 | Red-edge 2 | 20 m | vegetation condition and subtle canopy changes |
+| B07 | Red-edge 3 | 20 m | biomass/leaf structure response in dense vegetation |
+| B08 | NIR (broad) | 10 m | strong vegetation signal; central in NDVI/NBR |
+| B8A | NIR (narrow) | 20 m | additional vegetation discrimination in dense canopies |
+| B09 | Water vapor | 60 m | atmospheric moisture context for quality filtering |
+| B11 | SWIR1 | 20 m | moisture/stress and disturbed-ground sensitivity |
+| B12 | SWIR2 | 20 m | burn/disturbance signal, important for NBR dynamics |
 
-```text
-makeathon-challenge-2026-xylemx/
-├── README.md
-├── challenge.ipynb
-├── osapiens-challenge-full-description.md
-├── Makefile
-├── requirements.txt
-├── pyproject.toml
-├── download_data.py
-├── submission_utils.py
-├── scripts/
-│   ├── preprocess.py
-│   ├── train.py
-│   ├── predict.py
-│   ├── preprocessing_*.py
-│   └── train_*.py
-├── src/xylemx/
-│   ├── config.py
-│   ├── data/
-│   ├── labels/
-│   ├── preprocessing/
-│   ├── models/
-│   ├── training/
-│   ├── temporal/
-│   ├── single_2025/
-│   └── visualization/
-├── docs/
-├── tests/
-├── jobs/
-└── output/  # generated experiment artifacts
-```
+Derived indices used by the temporal pipeline:
 
-What each main area does:
+- `NDVI = (B08 - B04) / (B08 + B04)`
+- `NBR = (B08 - B12) / (B08 + B12)`
 
-- `src/xylemx/`: core library (data loading, feature engineering, model building, training logic).
-- `scripts/`: CLI entrypoints for reproducible runs.
-- `docs/`: architecture, pipeline, and technical notes.
-- `jobs/`: SLURM/local automation scripts.
-- `tests/`: coverage for config parsing, label fusion, model registry, and utilities.
-- `output/`: generated preprocessing caches, checkpoints, and predictions.
+#### Sentinel-1 (radar) representation in this code
 
-## Pipeline Tracks
+- Input files are monthly RTC rasters with orbit suffixes (`ascending` / `descending`).
+- The current snapshot preprocessing uses one radar band per file (first raster band).
+- If both orbits exist for a month, they are averaged per pixel into a single monthly S1 channel.
+- This adds cloud-robust structural change information complementary to optical features.
 
-- **Baseline snapshot**: standard segmentation from engineered multimodal snapshots.
-- **Leaderboard**: stronger defaults and model/threshold selection.
-- **Temporal**: segmentation + event-time prediction from monthly sequences.
-- **Temporal HQ**: higher-quality temporal defaults for stronger generalization.
-- **Single 2025**: simplified single-date summer-2025 variant.
+#### AEF embeddings representation
 
-## Preprocessing Details
+- AEF inputs are yearly per-pixel embedding rasters (`{tile}_{year}.tiff`).
+- Because raw embedding channels are high-dimensional and not directly interpretable, the pipeline fits PCA on train tiles and keeps `aef_pca_dim` components (default `8`, often `12` in tuned runs).
+- The PCA-compressed channels are then aligned to the Sentinel-2 master grid and used as model features.
 
-All training tracks start from preprocessing and produce reusable cached arrays in `output/preprocessing*`.
+#### Weak labels in the training data
 
-### Baseline Snapshot Preprocessing (`scripts/preprocess.py`)
+The project uses weak supervision from `RADD`, `GLAD-L`, and `GLAD-S2`, then fuses them.
 
-- Uses `src/xylemx/preprocessing/pipeline.py`.
-- Reprojects modalities and weak labels to the Sentinel-2 reference grid.
-- Builds multimodal features from staged snapshots.
-- Supports `temporal_feature_mode=snapshot_pair` with `early`, `late`, and `late-early` deltas.
-- Supports `temporal_feature_mode=snapshot_quad` with `early`, `middle1`, `middle2`, `late`, and deltas.
-- Writes train/test feature caches and train supervision arrays.
+| Source | What we ingest | Main decoding behavior in repo |
+|---|---|---|
+| RADD | `radd_{tile}_labels.tif` | Snapshot pipeline supports `permissive` (`raw > 0`) and `conservative` (`raw // 10000 >= 3`) modes; temporal pipeline also decodes confidence/date fields. |
+| GLAD-L | yearly `alert` + `alertDate` files | Yearly alerts are thresholded (default `>=2`) and merged across years (logical OR) into one source mask. |
+| GLAD-S2 | `alert` + `alertDate` files | Alert classes are thresholded (default depends on track), with optional confidence-aware filtering in temporal preprocessing. |
 
-Main artifacts:
+The fused supervision contains `target`, `soft_target`, `ignore_mask`, `weight_map`, `vote_count`, and `available_sources`.
 
-- `features/{split}/{tile}.npy`
-- `valid_masks/{split}/{tile}.npy`
-- `targets/{tile}.npy`
-- `ignore_masks/{tile}.npy`
-- `weight_maps/{tile}.npy`
-- `vote_counts/{tile}.npy`
-- `normalization_stats.json`
-- `train_tiles.json` and `val_tiles.json`
+### Data And Label Resources
 
-### Leaderboard Preprocessing (`scripts/preprocessing_leaderboard.py`)
+Project-local references:
 
-Uses the same core engine with tuned defaults, including:
+- [Challenge Brief](osapiens-challenge-full-description.md)
+- [Pipeline Overview](docs/pipeline-overview.md)
+- [Weak Label Fusion (repo implementation)](docs/weak-label-fusion.md)
+- [Project Technical Guide](docs/project-technical-guide.md)
 
-- `temporal_feature_mode=snapshot_quad`
-- `use_s1_features=true`
-- `use_aef_features=true`
-- tighter clipping settings and stronger label thresholds
+External references:
 
-### Temporal Preprocessing (`scripts/preprocessing_temporal.py`)
+- Sentinel-2 mission overview (ESA): <https://www.esa.int/Applications/Observing_the_Earth/Copernicus/Sentinel-2>
+- Sentinel-1 mission overview (ESA): <https://www.esa.int/Applications/Observing_the_Earth/Copernicus/Sentinel-1/Introducing_the_Sentinel-1_mission>
+- Sentinel-2 band wavelengths and names (NASA HLS spectral reference): <https://www.earthdata.nasa.gov/data/projects/hls/spectral-bands>
+- GLAD-L / GLAD-S2 dataset description (UMD GLAD): <https://glad.geog.umd.edu/dataset/glad-forest-alerts>
+- RADD overview and context (Global Forest Watch): <https://www.globalforestwatch.org/blog/data-and-research/radd-radar-alerts/>
+- RADD + GLAD integration research reference (Wageningen University): <https://research.wur.nl/en/publications/integrating-satellite-based-forest-disturbance-alerts-improves-de/>
 
-- Builds monthly time-series tensors from `time_start` to `time_end`.
-- Creates binary mask targets plus time-bin targets.
-- Supports representations such as `early_middle_late_deltas`.
-- Exports temporal specs and time-bin metadata for multitask training.
+## What The System Does
 
-### Single-Year Variant (`scripts/preprocessing_single_2025.py`)
+High-level pipeline:
 
-- Creates a simplified summer snapshot (default target year: `2025`).
-- Useful as a controlled ablation against temporal/snapshot-rich setups.
+1. Scan challenge tiles and resolve multimodal file sets.
+2. Reproject all modalities and weak labels to a common Sentinel-2 reference grid.
+3. Decode weak labels and fuse them into training supervision.
+4. Build feature tensors, validity masks, and normalization statistics.
+5. Train segmentation (and optionally temporal multitask) models.
+6. Run sliding-window inference and export GeoTIFF prediction masks.
+7. Convert prediction masks into GeoJSON submission artifacts.
 
-## Weak-Label Fusion Details
+## Preprocessing, Label Noise, And Fusion
 
-Fusion is implemented in `src/xylemx/labels/consensus.py` and is central to training quality.
+### Preprocessing
 
-Label sources:
+Implemented in `src/xylemx/preprocessing/` and `src/xylemx/temporal/preprocessing.py`:
 
-- `radd`
-- `gladl` (merged across yearly files)
-- `glads2`
+- Spatial alignment to the Sentinel-2 grid for pixel-wise consistency.
+- Snapshot feature modes:
+  - `snapshot_pair`: early + late + delta
+  - `snapshot_quad`: early + middle1 + middle2 + late + delta
+- Optional multimodal inclusion (`use_s1_features`, `use_aef_features`).
+- Train-only normalization statistics with clipping and robust handling of missing values.
 
-Source-to-binary conversion:
+### Label Challenge
 
-- `radd_positive_mode=permissive`: any positive code becomes alert.
-- `radd_positive_mode=conservative`: only high-confidence RADD classes.
-- `gladl_threshold` and `glads2_threshold` control source sensitivity.
+Weak labels are imperfect and often disagree across sources. The project explicitly models this uncertainty instead of treating any single source as ground truth.
 
-Fusion methods:
+Label logic includes:
 
-- `consensus_2of3`: positive if at least two sources vote positive.
-- `union`: positive if any source votes positive.
-- `unanimous`: positive if all available sources vote positive.
-- `soft_vote`: positive if `vote_count / available_sources >= soft_vote_threshold`.
+- source-specific decoding (`RADD`, `GLAD-L`, `GLAD-S2`)
+- configurable thresholds and confidence handling
+- fusion rules: `consensus_2of3`, `union`, `unanimous`, `soft_vote`
+- per-pixel outputs: `target`, `soft_target`, `ignore_mask`, `weight_map`, `vote_count`
 
-Training supervision outputs per pixel:
+This makes training more robust in noisy supervision settings.
 
-- `target`: binary target mask.
-- `soft_target`: source-agreement ratio.
-- `ignore_mask`: ignored pixels (outside extent and optional uncertain pixels).
-- `weight_map`: vote-based weight (`vote_weight_0..3`).
-- `vote_count` and `available_sources`: agreement diagnostics.
+## Models
 
-Default vote weights are:
+### 1) Segmentation Models (snapshot pipelines)
 
-- `vote_weight_0=1.0`
-- `vote_weight_1=0.3`
-- `vote_weight_2=0.8`
-- `vote_weight_3=1.0`
+From `src/xylemx/models/`:
 
-## Model Details
+- Native: `small_unet`, `coatnext_tiny_unet`
+- Timm encoder + decoder combinations (`_unet`, `_fpn`, `_unetpp`, `_upernet`, `_deeplabv3plus`, optional `_cbam`)
+- Example model names:
+  - `resnet18_unet`
+  - `resnet50_fpn`
+  - `convnext_tiny_upernet`
+  - `convnextv2_tiny_unetpp`
 
-### Segmentation Models (`src/xylemx/models/baseline.py`)
+### 2) Temporal Multitask Models
 
-Native models:
-
-- `small_unet`
-- `coatnext_tiny_unet`
-
-Composable timm models use:
-
-- Backbone alias + decoder suffix pattern.
-- Decoder suffix `_unet`
-- Decoder suffix `_fpn`
-- Decoder suffix `_unetpp`
-- Decoder suffix `_upernet`
-- Decoder suffix `_deeplabv3plus`
-- CBAM variants `_unet_cbam`, `_fpn_cbam`, `_unetpp_cbam`, `_upernet_cbam`, `_deeplabv3plus_cbam`
-
-Available backbone aliases include:
-
-- `resnet18`, `resnet34`, `resnet50`, `resnet101`
-- `efficientnet_b0`
-- `convnext_tiny`, `convnext_small`, `convnext_base`, `convnext_large`
-- `convnextv2_atto`, `convnextv2_femto`, `convnextv2_pico`, `convnextv2_nano`, `convnextv2_tiny`, `convnextv2_small`, `convnextv2_base`
-- `coatnet0`, `coatnet1`, `coatnet2`, `coatnet3`
-- `vgg11`, `vgg13`, `vgg16`, `vgg19`
-
-Example names:
-
-- `resnet50_fpn`
-- `resnet34_unetpp`
-- `convnext_tiny_upernet`
-- `convnextv2_tiny_deeplabv3plus_cbam`
-
-### Temporal Models (`src/xylemx/temporal/training.py`)
-
-Supported temporal model names:
+From `src/xylemx/temporal/model.py`:
 
 - `film_temporal_unet`
 - `film_temporal_unet_plus`
 
-Both are dual-head models that output:
+Both output:
 
-- segmentation mask logits
+- binary deforestation mask logits
 - event-time logits (time-bin classification)
 
-### Leaderboard Model Search
+## Getting Started
 
-`scripts/train_leaderboard.py` supports candidate search and optional threshold calibration.
-Default search candidates are:
+### 1) Environment setup
 
-- `resnet34_unetpp`
-- `resnet50_fpn`
-- `convnext_tiny_fpn`
-- `convnextv2_tiny_unetpp`
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
 
-## Key Files To Read First
+### 2) Download data (Python, not Make)
 
-1. [osapiens-challenge-full-description.md](./osapiens-challenge-full-description.md)
-2. [challenge.ipynb](./challenge.ipynb)
-3. [docs/pipeline-overview.md](./docs/pipeline-overview.md)
-4. [docs/project-technical-guide.md](./docs/project-technical-guide.md)
+```bash
+python download_data.py \
+  --bucket_name osapiens-terra-challenge \
+  --folder_name makeathon-challenge \
+  --local_dir ./data
+```
 
-## Documentation Index
+This creates `data/makeathon-challenge/`.
 
-- [Docs Home](./docs/README.md)
-- [Baseline Pipeline](./docs/baseline-pipeline.md)
-- [Pipeline Overview](./docs/pipeline-overview.md)
-- [Project Technical Guide](./docs/project-technical-guide.md)
-- [Weak Label Fusion](./docs/weak-label-fusion.md)
-- [SLURM Jobs](./jobs/README.md)
+### 3) Run baseline preprocessing
 
-## Notes
+```bash
+python scripts/preprocess.py \
+  --data-root data/makeathon-challenge \
+  --output-dir output/preprocessing \
+  --preprocessing-num-workers 4
+```
 
-- Training uses weak supervision, so label fusion quality is a first-class part of model quality.
-- Most scripts accept `key=value` overrides for fast experiment iteration.
-- Generated outputs under `output/` are large and should be treated as run artifacts, not hand-edited source files.
+### 4) Train baseline model
+
+```bash
+python scripts/train.py \
+  preprocessing_dir=output/preprocessing \
+  output_root=output/training_runs \
+  model=resnet18_unet \
+  epochs=40 \
+  batch_size=4
+```
+
+Notes:
+
+- `scripts/train.py` uses `key=value` overrides.
+- Runs are stored under `output/training_runs/<timestamp_model...>/`.
+- Best checkpoint is saved to `checkpoints/best.pt`.
+
+### 5) Run inference
+
+```bash
+python scripts/predict.py \
+  checkpoint=output/training_runs/<run_name>/checkpoints/best.pt \
+  split=val \
+  output_dir=output/predictions/<run_name> \
+  threshold=0.5
+```
+
+### 6) Build submission GeoJSON files
+
+```bash
+python scripts/make_submission.py \
+  prediction_dir=output/predictions/<run_name> \
+  output_dir=output/submissions/<run_name> \
+  min_area_ha=0.5
+```
+
+## Additional Pipelines
+
+- **Leaderboard track**
+  - `python scripts/preprocessing_leaderboard.py --data-root data/makeathon-challenge --output-dir output/preprocessing_leaderboard`
+  - `python scripts/train_leaderboard.py --data-root data/makeathon-challenge --preprocessing-dir output/preprocessing_leaderboard`
+
+- **Temporal HQ track**
+  - `python scripts/preprocessing_temporal_hq.py --data-root data/makeathon-challenge --output-dir output/preprocessing_temporal_hq`
+  - `python scripts/train_temporal_hq.py data_root=data/makeathon-challenge preprocessing_dir=output/preprocessing_temporal_hq`
+
+- **Single-2025 track**
+  - `python scripts/preprocessing_single_2025.py --data-root data/makeathon-challenge --output-dir output/preprocessing_single_2025`
+  - `python scripts/train_single_2025.py --data-root data/makeathon-challenge --preprocessing-dir output/preprocessing_single_2025`
+
+## Repository Structure
+
+```text
+makeathon-challenge-2026-xylemx/
+├── README.md
+├── scripts/
+├── src/xylemx/
+├── docs/
+├── tests/
+├── jobs/
+└── output/  # generated artifacts
+```
+
+## Documentation
+
+- [Pipeline Overview](docs/pipeline-overview.md)
+- [Project Technical Guide](docs/project-technical-guide.md)
+- [Weak Label Fusion](docs/weak-label-fusion.md)
+- [Baseline Pipeline](docs/baseline-pipeline.md)
+- [SLURM Jobs](jobs/README.md)
