@@ -192,6 +192,26 @@ Both output:
 - binary deforestation mask logits
 - event-time logits (time-bin classification)
 
+### Model Architecture Diagrams
+
+#### Snapshot segmentation architecture
+
+![Snapshot segmentation architecture](content/images/model_architecture_snapshot.png)
+
+#### Temporal dual-head FiLM architecture
+
+![Temporal dual-head FiLM architecture](content/images/model_architecture_temporal.png)
+
+#### Model family overview
+
+![Model family overview](content/images/model_architecture_overview.png)
+
+To regenerate these diagrams:
+
+```bash
+.venv/bin/python scripts/generate_model_architecture_diagrams.py
+```
+
 ## Getting Started
 
 ### 1) Environment setup
