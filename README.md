@@ -1,179 +1,153 @@
-# osapiens Challenge Makeathon 2026
+# XylemX - osapiens Makeathon 2026
 
-## Detecting Deforestation from Space
+## Deforestation Detection from Space
 
 ![Deforestation event example](content/deforestation.png)
 
-This repository contains the materials for the osapiens Makeathon 2026 challenge on deforestation detection from multimodal satellite data. The goal is to build a system that identifies deforestation events after 2020 using noisy, heterogeneous geospatial inputs and weak supervision signals.
+This repository contains team **xylemx**'s solution for the osapiens Makeathon 2026 challenge.
+We build geospatial ML pipelines that detect deforestation events from multimodal satellite data (Sentinel-2, Sentinel-1, AEF embeddings) with weak supervision.
 
-## Start Here
+## Core Idea: Systematic Experimentation
 
-If you are new to the repository, use these files in this order:
+The project idea was to **systematically experiment with different ideas**, not just train one model once.
 
-1. [osapiens-challenge-full-description.md](./osapiens-challenge-full-description.md) for the written challenge brief and context.
-2. [challenge.ipynb](./challenge.ipynb) for the full walkthrough of the dataset structure, label encodings, visualizations, and submission example.
-3. [download_data.py](./download_data.py) for the dataset download entrypoint used by the project.
+Our process is structured as repeatable experiment loops:
 
-## Repository Guide
+1. Define one hypothesis (feature representation, label fusion rule, model family, or training setting).
+2. Run a consistent preprocessing + training + evaluation pipeline.
+3. Compare runs using the same metrics and artifacts.
+4. Keep what generalizes, drop what does not.
 
-- [challenge.ipynb](./challenge.ipynb): Main challenge notebook with data layout, modality descriptions, label definitions, examples, and submission guidance.
-- [osapiens-challenge-full-description.md](./osapiens-challenge-full-description.md): Full challenge description.
-- [download_data.py](./download_data.py): Downloads the challenge data from S3 into `./data`.
-- [submission_utils.py](./submission_utils.py): Utility for converting prediction rasters into submission-ready GeoJSON.
-- [Makefile](./Makefile): Convenience targets for environment setup and data download.
+Main experimentation axes:
 
-## Setup
+- Data representation: `snapshot_pair`, `snapshot_quad`, temporal windows, single-year snapshots.
+- Supervision strategy: weak-label fusion modes (`consensus_2of3`, `union`, `soft_vote`, etc.).
+- Architecture choice: U-Net/FPN/UNet++/UPerNet/DeepLabV3+ with multiple backbones.
+- Training recipe: augmentations, threshold calibration, and leaderboard-oriented model selection.
 
-Create the virtual environment and install the dependencies:
+## How The Project Works
+
+At a high level, every pipeline follows the same shape:
+
+1. Read raw challenge rasters and weak labels.
+2. Reproject everything to a shared Sentinel-2 grid.
+3. Decode + fuse weak labels into training targets, ignore masks, and weight maps.
+4. Build feature tensors and normalization stats.
+5. Train segmentation (or temporal multitask) models.
+6. Run sliding-window inference on full tiles.
+7. Export prediction rasters and convert them to submission-ready GeoJSON.
+
+## Quick Start
+
+### 1) Install
 
 ```bash
 make install
 ```
 
-Download the dataset:
+### 2) Download dataset
 
 ```bash
 make download_data_from_s3
 ```
 
-This uses [download_data.py](./download_data.py) and stores the files under:
+Expected root after download:
 
 ```text
 data/makeathon-challenge/
 ```
 
-## Dataset Layout
-
-After downloading, the notebook expects the data in the following structure:
-
-```text
-data/makeathon-challenge/
-├── sentinel-1/
-│   ├── train/{tile_id}__s1_rtc/{tile_id}__s1_rtc_{year}_{month}_{ascending|descending}.tif
-│   └── test/...
-├── sentinel-2/
-│   ├── train/{tile_id}__s2_l2a/{tile_id}__s2_l2a_{year}_{month}.tif
-│   └── test/...
-├── aef-embeddings/
-│   ├── train/{tile_id}_{year}.tiff
-│   └── test/...
-├── labels/train/
-│   ├── gladl/
-│   ├── glads2/
-│   └── radd/
-└── metadata/
-    ├── train_tiles.geojson
-    └── test_tiles.geojson
-```
-
-## Explore the Notebook for the Full Challenge Walkthrough
-
-## Docs
-
-- [Baseline Pipeline](./docs/baseline-pipeline.md)
-- [Weak Label Fusion](./docs/weak-label-fusion.md)
-- [SLURM Jobs](./jobs/README.md)
-
-## Baseline Pipeline
-
-The repository now includes a lightweight, terminal-first baseline under `src/xylemx/` plus:
-
-```text
-scripts/preprocess.py
-scripts/train.py
-scripts/predict.py
-```
-
-Typical workflow:
+### 3) Run baseline pipeline
 
 ```bash
-./.venv/bin/pip install -e . --no-build-isolation
-
+# preprocessing
 ./.venv/bin/python scripts/preprocess.py \
   --data-root data/makeathon-challenge \
   --output-dir output/preprocessing
 
+# training
 ./.venv/bin/python scripts/train.py \
-  model=small_unet \
-  batch_size=8 \
-  patch_size=128 \
-  epochs=5 \
-  lr=1e-3 \
-  output_dir=output/train_runs/debug
+  model=resnet18_unet \
+  epochs=40 \
+  batch_size=4 \
+  output_root=output/training_runs
 
+# inference on validation split
 ./.venv/bin/python scripts/predict.py \
-  checkpoint=output/train_runs/debug/best.pt \
+  checkpoint=output/training_runs/<run_name>/best.pt \
   split=val \
-  output_dir=output/predictions/debug
+  output_dir=output/predictions/<run_name>
 ```
 
-Supported model names now include:
+## Project Structure
 
-- `small_unet`
-- `coatnext_tiny_unet` (tiny C-C-C-T hybrid encoder with U-Net decoder)
-- encoder-decoder variants use suffixes `*_unet`, `*_fpn`, `*_unetpp`, `*_upernet`, `*_deeplabv3plus`
-- CBAM attention variants use suffixes `*_unet_cbam`, `*_fpn_cbam`, `*_unetpp_cbam`, `*_upernet_cbam`, and `*_deeplabv3plus_cbam`
-- backbones currently include:
-  `resnet18`, `resnet34`, `resnet50`, `resnet101`
-  `efficientnet_b0`
-  `convnext_tiny`, `convnext_small`, `convnext_base`, `convnext_large`
-  `convnextv2_atto`, `convnextv2_femto`, `convnextv2_pico`, `convnextv2_nano`, `convnextv2_tiny`, `convnextv2_small`, `convnextv2_base`
-  `coatnet0`, `coatnet1`, `coatnet2`, `coatnet3`
-  `vgg11`, `vgg13`, `vgg16`, `vgg19`
-
-Examples:
-
-- `resnet50_unet`
-- `resnet50_fpn`
-- `resnet50_unetpp`
-- `resnet34_unet_cbam`
-- `resnet34_fpn_cbam`
-- `resnet34_fpn`
-- `convnext_tiny_fpn`
-- `convnext_tiny_upernet`
-- `convnext_tiny_deeplabv3plus`
-- `convnext_tiny_deeplabv3plus_cbam`
-- `convnextv2_tiny_unetpp`
-- `convnextv2_tiny_upernet`
-- `convnextv2_tiny_deeplabv3plus`
-- `coatnet0_fpn`
-- `coatnet0_upernet`
-- `coatnext_tiny_unet`
-- `vgg16_unetpp`
-
-## Leaderboard-Oriented Workflow (Opt-In)
-
-To keep baseline behavior unchanged while running a stronger setup for generalization, use:
-
-```bash
-./.venv/bin/python preprocessing_leaderboard.py \
-  --data-root data/makeathon-challenge \
-  --output-dir output/preprocessing_leaderboard
+```text
+makeathon-challenge-2026-xylemx/
+├── README.md
+├── challenge.ipynb
+├── osapiens-challenge-full-description.md
+├── Makefile
+├── requirements.txt
+├── pyproject.toml
+├── download_data.py
+├── submission_utils.py
+├── scripts/
+│   ├── preprocess.py
+│   ├── train.py
+│   ├── predict.py
+│   ├── preprocessing_*.py
+│   └── train_*.py
+├── src/xylemx/
+│   ├── config.py
+│   ├── data/
+│   ├── labels/
+│   ├── preprocessing/
+│   ├── models/
+│   ├── training/
+│   ├── temporal/
+│   ├── single_2025/
+│   └── visualization/
+├── docs/
+├── tests/
+├── jobs/
+└── output/  # generated experiment artifacts
 ```
 
-Then run model search + final training:
+What each main area does:
 
-```bash
-./.venv/bin/python train_leaderboard.py \
-  --preprocessing-dir output/preprocessing_leaderboard \
-  --selection-metric iou \
-  --calibrate-threshold \
-  --search-epochs 12 \
-  --final-epochs 50
-```
+- `src/xylemx/`: core library (data loading, feature engineering, model building, training logic).
+- `scripts/`: CLI entrypoints for reproducible runs.
+- `docs/`: architecture, pipeline, and technical notes.
+- `jobs/`: SLURM/local automation scripts.
+- `tests/`: coverage for config parsing, label fusion, model registry, and utilities.
+- `output/`: generated preprocessing caches, checkpoints, and predictions.
 
-Useful options:
+## Pipeline Tracks
 
-- `--model-candidates resnet34_unetpp,resnet50_fpn,convnext_tiny_fpn`
-- `--calibrate-threshold` to select a validation-optimized threshold for Union IoU
-- `--skip-search` to train only the first candidate
-- `--search-only` to run only model ranking
-- Any `key=value` overrides from `ExperimentConfig` are also supported (for example `epochs=60`, `batch_size=6`)
+- **Baseline snapshot**: standard segmentation from engineered multimodal snapshots.
+- **Leaderboard**: stronger defaults and model/threshold selection.
+- **Temporal**: segmentation + event-time prediction from monthly sequences.
+- **Temporal HQ**: higher-quality temporal defaults for stronger generalization.
+- **Single 2025**: simplified single-date summer-2025 variant.
 
-## Notes And Assumptions
+## Key Files To Read First
 
-- The first baseline uses Sentinel-2 only and builds one early-year composite and one late-year composite per tile. It prefers `2020` and `2025`, and falls back to the earliest/latest available Sentinel-2 year when a tile is missing one of those endpoints.
-- Weak labels are decoded and reprojected onto the Sentinel-2 grid before consensus targets are built.
-- The current multimodal preprocessing default uses a `snapshot_pair` feature mode: one early snapshot, one late snapshot, and one `late - early` delta for Sentinel-2, Sentinel-1, and AEF PCA features.
-- One training tile in the provided data (`18NWM_9_4`) is only 2 pixels wide in Sentinel-2. The dataset loader skips tiles smaller than the requested patch size instead of forcing invalid patches into training.
-- In this offline sandbox, editable install needed `--no-build-isolation` because `pip install -e .` attempted to resolve build dependencies from the network.
+1. [osapiens-challenge-full-description.md](./osapiens-challenge-full-description.md)
+2. [challenge.ipynb](./challenge.ipynb)
+3. [docs/pipeline-overview.md](./docs/pipeline-overview.md)
+4. [docs/project-technical-guide.md](./docs/project-technical-guide.md)
+
+## Documentation Index
+
+- [Docs Home](./docs/README.md)
+- [Baseline Pipeline](./docs/baseline-pipeline.md)
+- [Pipeline Overview](./docs/pipeline-overview.md)
+- [Project Technical Guide](./docs/project-technical-guide.md)
+- [Weak Label Fusion](./docs/weak-label-fusion.md)
+- [SLURM Jobs](./jobs/README.md)
+
+## Notes
+
+- Training uses weak supervision, so label fusion quality is a first-class part of model quality.
+- Most scripts accept `key=value` overrides for fast experiment iteration.
+- Generated outputs under `output/` are large and should be treated as run artifacts, not hand-edited source files.
