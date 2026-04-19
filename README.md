@@ -130,6 +130,146 @@ What each main area does:
 - **Temporal HQ**: higher-quality temporal defaults for stronger generalization.
 - **Single 2025**: simplified single-date summer-2025 variant.
 
+## Preprocessing Details
+
+All training tracks start from preprocessing and produce reusable cached arrays in `output/preprocessing*`.
+
+### Baseline Snapshot Preprocessing (`scripts/preprocess.py`)
+
+- Uses `src/xylemx/preprocessing/pipeline.py`.
+- Reprojects modalities and weak labels to the Sentinel-2 reference grid.
+- Builds multimodal features from staged snapshots.
+- Supports `temporal_feature_mode=snapshot_pair` with `early`, `late`, and `late-early` deltas.
+- Supports `temporal_feature_mode=snapshot_quad` with `early`, `middle1`, `middle2`, `late`, and deltas.
+- Writes train/test feature caches and train supervision arrays.
+
+Main artifacts:
+
+- `features/{split}/{tile}.npy`
+- `valid_masks/{split}/{tile}.npy`
+- `targets/{tile}.npy`
+- `ignore_masks/{tile}.npy`
+- `weight_maps/{tile}.npy`
+- `vote_counts/{tile}.npy`
+- `normalization_stats.json`
+- `train_tiles.json` and `val_tiles.json`
+
+### Leaderboard Preprocessing (`scripts/preprocessing_leaderboard.py`)
+
+Uses the same core engine with tuned defaults, including:
+
+- `temporal_feature_mode=snapshot_quad`
+- `use_s1_features=true`
+- `use_aef_features=true`
+- tighter clipping settings and stronger label thresholds
+
+### Temporal Preprocessing (`scripts/preprocessing_temporal.py`)
+
+- Builds monthly time-series tensors from `time_start` to `time_end`.
+- Creates binary mask targets plus time-bin targets.
+- Supports representations such as `early_middle_late_deltas`.
+- Exports temporal specs and time-bin metadata for multitask training.
+
+### Single-Year Variant (`scripts/preprocessing_single_2025.py`)
+
+- Creates a simplified summer snapshot (default target year: `2025`).
+- Useful as a controlled ablation against temporal/snapshot-rich setups.
+
+## Weak-Label Fusion Details
+
+Fusion is implemented in `src/xylemx/labels/consensus.py` and is central to training quality.
+
+Label sources:
+
+- `radd`
+- `gladl` (merged across yearly files)
+- `glads2`
+
+Source-to-binary conversion:
+
+- `radd_positive_mode=permissive`: any positive code becomes alert.
+- `radd_positive_mode=conservative`: only high-confidence RADD classes.
+- `gladl_threshold` and `glads2_threshold` control source sensitivity.
+
+Fusion methods:
+
+- `consensus_2of3`: positive if at least two sources vote positive.
+- `union`: positive if any source votes positive.
+- `unanimous`: positive if all available sources vote positive.
+- `soft_vote`: positive if `vote_count / available_sources >= soft_vote_threshold`.
+
+Training supervision outputs per pixel:
+
+- `target`: binary target mask.
+- `soft_target`: source-agreement ratio.
+- `ignore_mask`: ignored pixels (outside extent and optional uncertain pixels).
+- `weight_map`: vote-based weight (`vote_weight_0..3`).
+- `vote_count` and `available_sources`: agreement diagnostics.
+
+Default vote weights are:
+
+- `vote_weight_0=1.0`
+- `vote_weight_1=0.3`
+- `vote_weight_2=0.8`
+- `vote_weight_3=1.0`
+
+## Model Details
+
+### Segmentation Models (`src/xylemx/models/baseline.py`)
+
+Native models:
+
+- `small_unet`
+- `coatnext_tiny_unet`
+
+Composable timm models use:
+
+- Backbone alias + decoder suffix pattern.
+- Decoder suffix `_unet`
+- Decoder suffix `_fpn`
+- Decoder suffix `_unetpp`
+- Decoder suffix `_upernet`
+- Decoder suffix `_deeplabv3plus`
+- CBAM variants `_unet_cbam`, `_fpn_cbam`, `_unetpp_cbam`, `_upernet_cbam`, `_deeplabv3plus_cbam`
+
+Available backbone aliases include:
+
+- `resnet18`, `resnet34`, `resnet50`, `resnet101`
+- `efficientnet_b0`
+- `convnext_tiny`, `convnext_small`, `convnext_base`, `convnext_large`
+- `convnextv2_atto`, `convnextv2_femto`, `convnextv2_pico`, `convnextv2_nano`, `convnextv2_tiny`, `convnextv2_small`, `convnextv2_base`
+- `coatnet0`, `coatnet1`, `coatnet2`, `coatnet3`
+- `vgg11`, `vgg13`, `vgg16`, `vgg19`
+
+Example names:
+
+- `resnet50_fpn`
+- `resnet34_unetpp`
+- `convnext_tiny_upernet`
+- `convnextv2_tiny_deeplabv3plus_cbam`
+
+### Temporal Models (`src/xylemx/temporal/training.py`)
+
+Supported temporal model names:
+
+- `film_temporal_unet`
+- `film_temporal_unet_plus`
+
+Both are dual-head models that output:
+
+- segmentation mask logits
+- event-time logits (time-bin classification)
+
+### Leaderboard Model Search
+
+`scripts/train_leaderboard.py` supports candidate search and optional threshold calibration.
+Default search candidates are:
+
+- `resnet34_unetpp`
+- `resnet50_fpn`
+- `convnext_tiny_fpn`
+- `convnextv2_tiny_unetpp`
+
 ## Key Files To Read First
 
 1. [osapiens-challenge-full-description.md](./osapiens-challenge-full-description.md)
