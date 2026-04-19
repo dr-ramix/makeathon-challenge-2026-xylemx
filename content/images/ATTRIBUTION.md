@@ -63,3 +63,7 @@ These files are generated from this repository's own training runs or scripts:
 - `model_output_coatnext_48PXC_panel.jpg`
 - `model_output_coatnext_48PXC_pred_overlay.jpg`
 - `model_output_coatnext_48PXC_preview.jpg`
+- `professional_18NYH_overview_panel.jpg`
+- `professional_18NYH_temporal_s2_timeline.jpg`
+- `professional_18NYH_input_preview.jpg`
+- `professional_18NYH_s2_true_color.jpg`

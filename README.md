@@ -1,10 +1,31 @@
 # Multimodal Deforestation Detection and Segmentation
 
-![Deforestation event example](content/deforestation.png)
-
 A computer vision and geospatial ML project for pixel-level deforestation detection from multimodal satellite data.
 
 This repository is maintained as a personal technical project by team **XylemX**. It was originally built during the **osapiens** Makeathon 2026 challenge and then expanded into a reproducible research-style pipeline.
+
+## Project Snapshot
+
+![Professional overview panel 18NYH_2_1](content/images/professional_18NYH_overview_panel.jpg)
+
+This image is copied from:
+`output/professional_visualizations/clearer_samples_test/18NYH_2_1/overview_panel.png`
+
+## At A Glance
+
+- Task: binary deforestation segmentation (and optional event-time prediction in temporal mode).
+- Inputs: Sentinel-2, Sentinel-1, AEF embeddings.
+- Supervision: weak-label fusion from RADD, GLAD-L, and GLAD-S2.
+- Output: georeferenced prediction rasters and submission-ready GeoJSON.
+
+## Quick Navigation
+
+- [Why This Project Matters](#why-this-project-matters)
+- [Data From Space: Modalities And Label Sources](#data-from-space-modalities-and-label-sources)
+- [Models](#models)
+- [Getting Started](#getting-started)
+- [Additional Pipelines](#additional-pipelines)
+- [Documentation](#documentation)
 
 ## Visual Gallery
 
@@ -284,6 +305,23 @@ To regenerate these diagrams:
 #### Input preview
 
 ![CoAtNeXt input preview](content/images/model_output_coatnext_48PXC_preview.jpg)
+
+### Professional Visualization Samples (`18NYH_2_1`)
+
+These samples were copied from:
+`output/professional_visualizations/clearer_samples_test/18NYH_2_1`
+
+#### Sentinel-2 temporal timeline
+
+![Professional temporal S2 timeline 18NYH_2_1](content/images/professional_18NYH_temporal_s2_timeline.jpg)
+
+#### Input preview
+
+![Professional input preview 18NYH_2_1](content/images/professional_18NYH_input_preview.jpg)
+
+#### Sentinel-2 true color layer
+
+![Professional S2 true color 18NYH_2_1](content/images/professional_18NYH_s2_true_color.jpg)
 
 ## Getting Started
 
